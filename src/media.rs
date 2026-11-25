@@ -1,5 +1,6 @@
 //! Event-driven bridge to the current Windows media session.
 
+use crate::artwork::Artwork;
 use std::{
     io,
     sync::{
@@ -14,9 +15,11 @@ use windows::{
     Media::Control::{
         GlobalSystemMediaTransportControlsSession as Session,
         GlobalSystemMediaTransportControlsSessionManager as Manager,
+        GlobalSystemMediaTransportControlsSessionMediaProperties as MediaProperties,
         GlobalSystemMediaTransportControlsSessionPlaybackStatus as Status,
     },
     Win32::System::WinRT::{RO_INIT_MULTITHREADED, RoInitialize, RoUninitialize},
+    core::AgileReference,
 };
 use windows_sys::Win32::{
     Foundation::HWND,
@@ -35,6 +38,7 @@ pub struct NowPlaying {
     pub previous: bool,
     pub next: bool,
     pub timeline: Option<Timeline>,
+    pub artwork: Option<Arc<Artwork>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -71,13 +75,24 @@ pub enum Action {
 
 enum Command {
     Refresh,
-    Control { generation: u64, action: Action },
+    Control {
+        generation: u64,
+        action: Action,
+    },
+    Artwork {
+        key: ArtworkKey,
+        image: Option<Arc<Artwork>>,
+    },
 }
+
+type ArtworkKey = (u64, u64);
 
 #[derive(Clone)]
 struct Signals {
     sender: SyncSender<Command>,
     refresh_pending: Arc<AtomicBool>,
+    artwork_demand: Arc<AtomicBool>,
+    metadata_changed: Arc<AtomicBool>,
 }
 
 impl Signals {
@@ -102,6 +117,8 @@ impl Media {
         let signals = Signals {
             sender,
             refresh_pending: Arc::new(AtomicBool::new(false)),
+            artwork_demand: Arc::new(AtomicBool::new(false)),
+            metadata_changed: Arc::new(AtomicBool::new(false)),
         };
         let alive = Arc::new(AtomicBool::new(true));
         let snapshot = Arc::new(Mutex::new(None));
@@ -140,6 +157,12 @@ impl Media {
             .sender
             .try_send(Command::Control { generation, action });
     }
+
+    pub fn request_artwork(&self, enabled: bool) {
+        if self.signals.artwork_demand.swap(enabled, Ordering::AcqRel) != enabled {
+            self.signals.refresh();
+        }
+    }
 }
 
 impl Drop for Media {
@@ -161,6 +184,7 @@ impl Subscription {
         let metadata = signals.clone();
         let properties = session
             .MediaPropertiesChanged(&TypedEventHandler::new(move |_, _| {
+                metadata.metadata_changed.store(true, Ordering::Release);
                 metadata.refresh();
                 Ok(())
             }))
@@ -221,6 +245,9 @@ fn run(
         .ok();
     let mut active: Option<Subscription> = None;
     let mut generation = 0_u64;
+    let mut metadata_revision = 0_u64;
+    let mut artwork_cache: Option<(ArtworkKey, Option<Arc<Artwork>>)> = None;
+    let mut decoding = false;
     signals.refresh();
     while alive.load(Ordering::Acquire) {
         let Ok(command) = inbox.recv() else { break };
@@ -235,18 +262,52 @@ fn run(
             active = current.map(|session| Subscription::attach(session, &signals));
             generation = generation.wrapping_add(1);
         }
-        if let Command::Control {
-            generation: selected,
-            action,
-        } = command
-            && generation == selected
-            && let Some(active) = &active
-        {
-            perform(&active.session, action);
+        if signals.metadata_changed.swap(false, Ordering::AcqRel) {
+            metadata_revision = metadata_revision.wrapping_add(1);
+        }
+        let key = (generation, metadata_revision);
+        let wants_artwork = signals.artwork_demand.load(Ordering::Acquire);
+        match command {
+            Command::Control {
+                generation: selected,
+                action,
+            } if generation == selected => {
+                if let Some(active) = &active {
+                    perform(&active.session, action);
+                }
+            }
+            Command::Artwork {
+                key: finished,
+                image,
+            } => {
+                decoding = false;
+                if wants_artwork && finished == key {
+                    artwork_cache = Some((finished, image));
+                }
+            }
+            _ => {}
+        }
+        if !wants_artwork {
+            artwork_cache = None;
         }
         let snapshot = active
             .as_ref()
-            .and_then(|active| read(&active.session, generation));
+            .and_then(|active| read(&active.session, generation))
+            .map(|(mut now_playing, properties)| {
+                if wants_artwork {
+                    if let Some((_, artwork)) =
+                        artwork_cache.as_ref().filter(|(cached, _)| *cached == key)
+                    {
+                        now_playing.artwork = artwork.clone();
+                    } else if !decoding {
+                        decoding = start_artwork(&properties, key, signals.sender.clone());
+                        if !decoding {
+                            artwork_cache = Some((key, None));
+                        }
+                    }
+                }
+                now_playing
+            });
         if let Ok(mut published) = output.lock()
             && *published != snapshot
         {
@@ -263,7 +324,35 @@ fn run(
     }
 }
 
-fn read(session: &Session, generation: u64) -> Option<NowPlaying> {
+fn start_artwork(
+    properties: &MediaProperties,
+    key: ArtworkKey,
+    sender: SyncSender<Command>,
+) -> bool {
+    let Ok(stream) = properties.Thumbnail() else {
+        return false;
+    };
+    let Ok(stream) = AgileReference::new(&stream) else {
+        return false;
+    };
+    thread::Builder::new()
+        .name("monolith-artwork".into())
+        .spawn(move || {
+            let mut image = None;
+            if unsafe { RoInitialize(RO_INIT_MULTITHREADED) }.is_ok() {
+                image = stream
+                    .resolve()
+                    .ok()
+                    .and_then(|reference| Artwork::decode(&reference))
+                    .map(Arc::new);
+                unsafe { RoUninitialize() };
+            }
+            let _ = sender.send(Command::Artwork { key, image });
+        })
+        .is_ok()
+}
+
+fn read(session: &Session, generation: u64) -> Option<(NowPlaying, MediaProperties)> {
     let media = session.TryGetMediaPropertiesAsync().ok()?.join().ok()?;
     let title = media.Title().ok()?.to_string_lossy();
     let artist = media
@@ -281,7 +370,7 @@ fn read(session: &Session, generation: u64) -> Option<NowPlaying> {
         .ok()
         .filter(|rate| rate.is_finite() && rate.abs() <= 1000.0)
         .map(|rate| (rate * 1000.0).round() as i32);
-    Some(NowPlaying {
+    let snapshot = NowPlaying {
         generation,
         title: title.chars().take(180).collect(),
         artist: artist.chars().take(100).collect(),
@@ -295,7 +384,9 @@ fn read(session: &Session, generation: u64) -> Option<NowPlaying> {
         previous: flags.IsPreviousEnabled().unwrap_or(false),
         next: flags.IsNextEnabled().unwrap_or(false),
         timeline: read_timeline(session, rate),
-    })
+        artwork: None,
+    };
+    Some((snapshot, media))
 }
 
 fn read_timeline(session: &Session, rate_milli: Option<i32>) -> Option<Timeline> {

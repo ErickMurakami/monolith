@@ -21,7 +21,7 @@ Launch with `--dock` to show the experimental Dock. It floats along the bottom o
 
 Launch with `--top-bar` to show a borderless status bar on the primary display. It displays the local clock and battery status when Windows reports a battery. Right-click the bar to open Spotlight or exit Monolith. It hides during fullscreen use.
 
-Launch with `--island` to display the title and artist from the current Windows media session. Click the media label to expand play, pause, previous and next controls where the source supports them. A progress strip appears when Windows reports a valid timeline. Use `--island --top-bar` to place it in the centre of the status bar. The Island hides during fullscreen use and when Windows has no matching media session.
+Launch with `--island` to display the title and artist from the current Windows media session. Click the media label to expand the artwork and play, pause, previous and next controls where the source provides them. A progress strip appears when Windows reports a valid timeline. Use `--island --top-bar` to place it in the centre of the status bar. The Island hides during fullscreen use and when Windows has no matching media session.
 
 Monolith tries Win+Space first. If Windows reports that chord is already registered, Monolith registers Ctrl+Alt+Space as its fallback and displays it in the search placeholder. With `--resident`, the registered shortcut opens Spotlight and a second press dismisses it. Escape returns focus to the previous window when Windows permits it. To change the binding, create `%LOCALAPPDATA%\Monolith\config.toml` and restart Monolith.
 
@@ -45,7 +45,7 @@ Invalid settings are preserved on disk and defaults are loaded. Rename the file 
 ## Project status
 
 - Implemented in the experimental build. Native Win32 launcher, local ranking of desktop shortcuts and open windows, calculator, opt-in running-window Dock, configurable shortcut, light and dark themes, and safe start.
-- Planned. Simultaneous per-display Docks, additional Top Bar modules, Island artwork, workspaces, Files, indexing, optimisation, Android continuity, installer and release validation.
+- Planned. Simultaneous per-display Docks, additional Top Bar modules, Control Center, workspaces, Files, indexing, optimisation, Android continuity, installer and release validation.
 - Unsupported by the current launcher. UWP app discovery, file search, web search and arbitrary command execution.
 
 The UI runs on the Win32 message queue and renders on demand. Spotlight builds its catalog on first use. Search and configuration are independent of Win32, with unit tests for ranking, discovery and recovery.

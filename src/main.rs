@@ -1,5 +1,7 @@
 #![cfg_attr(all(windows, not(test)), windows_subsystem = "windows")]
 
+#[cfg(windows)]
+mod artwork;
 #[cfg(any(windows, test))]
 mod calculator;
 #[cfg(any(windows, test))]

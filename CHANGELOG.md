@@ -20,3 +20,4 @@
 - Added cached monochrome Shell icons and native tooltips to the Dock.
 - Added a native Dynamic Island for Windows media metadata and transport actions.
 - Added playback progress based on the Windows media timeline.
+- Added artwork loaded on demand from the active Windows media session.

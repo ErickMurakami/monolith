@@ -48,8 +48,22 @@ try {
         for ($i = 0; $i -lt $signal.Length; $i++) { $signal[$i] = 128 }
         $writer.Write($signal)
     } finally { $writer.Dispose() }
+    Add-Type -AssemblyName System.Drawing
+    $cover = [Drawing.Bitmap]::new(192, 192)
+    $paint = [Drawing.Graphics]::FromImage($cover)
+    $ink = [Drawing.SolidBrush]::new([Drawing.Color]::FromArgb(224, 224, 224))
+    try {
+        $paint.Clear([Drawing.Color]::FromArgb(32, 36, 44))
+        $paint.FillRectangle($ink, 78, 20, 36, 152)
+        $paint.FillRectangle($ink, 20, 78, 152, 36)
+        $cover.Save((Join-Path $scratch 'cover.png'), [Drawing.Imaging.ImageFormat]::Png)
+    } finally {
+        $ink.Dispose()
+        $paint.Dispose()
+        $cover.Dispose()
+    }
     $html = Join-Path $scratch 'fixture.html'
-    @'
+    $page = @'
 <!doctype html>
 <meta charset="utf-8">
 <title>Local media verification</title>
@@ -61,7 +75,8 @@ let track = 1;
 const showTrack = () => {
     session.metadata = new MediaMetadata({
         title: 'Verification track ' + track,
-        artist: 'Local fixture'
+        artist: 'Local fixture',
+        artwork: [{src: 'data:image/png;base64,__COVER__', sizes: '192x192', type: 'image/png'}]
     });
 };
 showTrack();
@@ -91,7 +106,9 @@ session.setActionHandler('previoustrack', () => {
     audio.currentTime = 0;
 });
 </script>
-'@ | Set-Content -LiteralPath $html -Encoding UTF8
+'@
+    $encodedCover = [Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $scratch 'cover.png')))
+    $page.Replace('__COVER__', $encodedCover) | Set-Content -LiteralPath $html -Encoding UTF8
     $profile = Join-Path $scratch 'profile'
     $uri = [Uri]::new($html).AbsoluteUri
     $browserProcess = Start-Process -FilePath $Browser -ArgumentList @(
@@ -101,12 +118,14 @@ session.setActionHandler('previoustrack', () => {
     $launcher = Start-Process -FilePath (Resolve-Path $mediaBinary) -ArgumentList '--island','--top-bar' -PassThru
     Wait-Until {
         $surface = [DesktopSmoke]::FindVisibleForProcess('MonolithIsland', [uint32]$launcher.Id)
-        $surface -ne [IntPtr]::Zero -and (Read-Text ([DesktopSmoke]::FindChild($surface, 'Static'))) -like '*Verification track 1*Local fixture*'
+        $surface -ne [IntPtr]::Zero -and (Read-Text ([DesktopSmoke]::GetDlgItem($surface, 1))) -like '*Verification track 1*Local fixture*'
     } 'The installed browser did not publish its local fixture to Windows media sessions.'
     $island = [DesktopSmoke]::FindVisibleForProcess('MonolithIsland', [uint32]$launcher.Id)
-    $label = [DesktopSmoke]::FindChild($island, 'Static')
+    $label = [DesktopSmoke]::GetDlgItem($island, 1)
+    $artwork = [DesktopSmoke]::GetDlgItem($island, 5)
     if (([DesktopSmoke]::Style($island, -16) -band 0x00CF0000) -or
         !([DesktopSmoke]::Style($island, -20) -band 0x80)) { throw 'The media Island has a conventional frame.' }
+    if ([DesktopSmoke]::IsWindowVisible($artwork)) { throw 'Artwork appeared in the collapsed surface.' }
     if (![DesktopSmoke]::Click($label)) { throw 'Could not expand the media controls.' }
     $toggle = [DesktopSmoke]::FindWindowEx($island, [IntPtr]::Zero, 'Button', 'Pause')
     if (![DesktopSmoke]::IsWindowVisible($toggle)) { throw 'The expanded media controls are not visible.' }
@@ -115,6 +134,25 @@ session.setActionHandler('previoustrack', () => {
         [DesktopSmoke]::IsWindowVisible($progress) -and
         [DesktopSmoke]::Send($progress, 1032, [UIntPtr]::Zero, [IntPtr]::Zero).ToInt64() -gt 0
     } 'The published media timeline did not produce visible playback progress.'
+    Wait-Until { [DesktopSmoke]::IsWindowVisible($artwork) } 'The published media artwork was not displayed.'
+    $bounds = [DesktopSmoke]::Bounds($artwork)
+    $sample = [Drawing.Bitmap]::new(1, 1)
+    $pixelReader = [Drawing.Graphics]::FromImage($sample)
+    try {
+        Wait-Until {
+            $pixelReader.CopyFromScreen([int](($bounds[0]+$bounds[2])/2), [int](($bounds[1]+$bounds[3])/2), 0, 0, $sample.Size)
+            $pixel = $sample.GetPixel(0, 0)
+            $centreMatches = $pixel.R -ge 205 -and $pixel.G -ge 205 -and $pixel.B -ge 205
+            $x = $bounds[0] + [int](($bounds[2]-$bounds[0]) * 0.15)
+            $y = $bounds[1] + [int](($bounds[3]-$bounds[1]) * 0.15)
+            $pixelReader.CopyFromScreen($x, $y, 0, 0, $sample.Size)
+            $corner = $sample.GetPixel(0, 0)
+            $centreMatches -and $corner.R -eq 32 -and $corner.G -eq 36 -and $corner.B -eq 44
+        } 'The Island did not paint the decoded pixels from the published cover.'
+    } finally {
+        $pixelReader.Dispose()
+        $sample.Dispose()
+    }
     if ($mediaCapture) { Save-SurfaceCapture $island $mediaCapture }
 
     Click-IslandAction $island 'Pause'
@@ -141,7 +179,7 @@ session.setActionHandler('previoustrack', () => {
     Wait-Until { ![DesktopSmoke]::IsWindowVisible($island) } 'The media Island did not hide in fullscreen.'
     $fullscreen.SetBounds(60, 60, 640, 410)
     Wait-Until { [DesktopSmoke]::IsWindowVisible($island) } 'The media Island did not recover after fullscreen.'
-    'Real Windows media metadata, transport, timeline, pause freeze and fullscreen passed.'
+    'Real Windows media metadata, artwork, transport, timeline, pause freeze and fullscreen passed.'
 } finally {
     if ($launcher -and !$launcher.HasExited) {
         $window = [DesktopSmoke]::FindVisibleForProcess('MonolithTopBar', [uint32]$launcher.Id)

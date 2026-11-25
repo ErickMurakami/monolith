@@ -13,7 +13,7 @@ use windows_sys::Win32::{
     Graphics::Gdi::*,
     System::{
         SystemInformation::GetSystemTimeAsFileTime,
-        SystemServices::{SS_CENTERIMAGE, SS_ENDELLIPSIS, SS_NOTIFY},
+        SystemServices::{SS_CENTERIMAGE, SS_ENDELLIPSIS, SS_NOTIFY, SS_OWNERDRAW},
     },
     UI::{
         Accessibility::*,
@@ -29,6 +29,7 @@ const LABEL: usize = 1;
 const PREVIOUS: usize = 2;
 const TOGGLE: usize = 3;
 const NEXT: usize = 4;
+const ARTWORK: usize = 5;
 const REPOSITION: usize = 1;
 const PROGRESS: usize = 2;
 
@@ -48,6 +49,7 @@ struct State {
     host: HWND,
     controls: [HWND; 4],
     progress: HWND,
+    artwork: HWND,
     font: HFONT,
     dpi: u32,
     brush: HBRUSH,
@@ -104,6 +106,7 @@ impl Island {
                     host,
                     controls: [null_mut(); 4],
                     progress: null_mut(),
+                    artwork: null_mut(),
                     font: null_mut(),
                     dpi: 0,
                     brush: CreateSolidBrush(palette.background),
@@ -118,6 +121,20 @@ impl Island {
                 return Err(io::Error::last_os_error());
             }
             island.state.progress = progress_control(hwnd, instance, &raw mut *island.state);
+            island.state.artwork = CreateWindowExW(
+                0,
+                wide("STATIC").as_ptr(),
+                wide("Album artwork").as_ptr(),
+                WS_CHILD | SS_OWNERDRAW,
+                0,
+                0,
+                0,
+                0,
+                hwnd,
+                ARTWORK as *mut c_void,
+                instance,
+                null_mut(),
+            );
             for (index, control) in island.state.controls.iter_mut().enumerate() {
                 let (class, style) = if index == 0 {
                     ("STATIC", SS_NOTIFY | SS_CENTERIMAGE | SS_ENDELLIPSIS)
@@ -302,6 +319,9 @@ unsafe fn layout(hwnd: HWND, state: *mut State) {
     unsafe {
         KillTimer(hwnd, PROGRESS);
         let Some(current) = (*state).current.as_ref() else {
+            if let Some(media) = (*state).media.as_ref() {
+                media.request_artwork(false);
+            }
             ShowWindow(hwnd, SW_HIDE);
             return;
         };
@@ -313,11 +333,19 @@ unsafe fn layout(hwnd: HWND, state: *mut State) {
         if GetMonitorInfoW(monitor, &mut info) == 0
             || desktop::foreground_covers_monitor(monitor, &info.rcMonitor)
         {
+            if let Some(media) = (*state).media.as_ref() {
+                media.request_artwork(false);
+            }
             ShowWindow(hwnd, SW_HIDE);
             return;
         }
         // Copy the presentation before calling APIs that can send window messages.
         let expanded = (*state).expanded;
+        let artwork_view = (*state).artwork;
+        if let Some(media) = (*state).media.as_ref() {
+            media.request_artwork(expanded && !artwork_view.is_null());
+        }
+        let show_artwork = expanded && current.artwork.is_some() && !artwork_view.is_null();
         let title = match (current.title.is_empty(), current.artist.is_empty()) {
             (true, _) => current.artist.clone(),
             (_, true) => current.title.clone(),
@@ -358,15 +386,21 @@ unsafe fn layout(hwnd: HWND, state: *mut State) {
         let work = info.rcWork;
         let work_width = (work.right - work.left).max(1);
         let width = scale(346).min(work_width.saturating_sub(scale(16))).max(1);
-        let label_height = scale(27);
+        let label_height = scale(if show_artwork { 37 } else { 27 });
         let height = if show_progress {
-            scale(73)
+            label_height + scale(46)
         } else if expanded {
-            scale(63)
+            label_height + scale(36)
         } else {
             label_height
         };
         let inset = scale(8);
+        let artwork_size = scale(28);
+        let label_left = if show_artwork {
+            inset + artwork_size + scale(7)
+        } else {
+            inset
+        };
         let left = work.left + (work_width - width) / 2;
         let mut top = work.top + scale(4);
         let host = (*state).host;
@@ -377,15 +411,30 @@ unsafe fn layout(hwnd: HWND, state: *mut State) {
             }
         }
         SetWindowTextW(controls[0], wide(&title).as_ptr());
+        if show_artwork {
+            SetWindowPos(
+                artwork_view,
+                null_mut(),
+                inset,
+                (label_height - artwork_size) / 2,
+                artwork_size,
+                artwork_size,
+                SWP_SHOWWINDOW | SWP_NOZORDER | SWP_NOACTIVATE,
+            );
+            InvalidateRect(artwork_view, std::ptr::null(), 1);
+        } else if !artwork_view.is_null() {
+            ShowWindow(artwork_view, SW_HIDE);
+        }
         SetWindowPos(
             controls[0],
             null_mut(),
-            inset,
+            label_left,
             0,
-            (width - 2 * inset).max(1),
+            (width - label_left - inset).max(1),
             label_height,
-            SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW,
+            SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW | SWP_NOCOPYBITS,
         );
+        InvalidateRect(controls[0], std::ptr::null(), 1);
         let portuguese = (*state).portuguese;
         let captions = match (portuguese, playing) {
             (false, true) => ["Previous", "Pause", "Next"],
@@ -418,7 +467,7 @@ unsafe fn layout(hwnd: HWND, state: *mut State) {
                 progress,
                 null_mut(),
                 inset,
-                scale(62),
+                label_height + scale(35),
                 (width - 2 * inset).max(1),
                 scale(3),
                 SWP_SHOWWINDOW | SWP_NOZORDER | SWP_NOACTIVATE,
@@ -435,6 +484,7 @@ unsafe fn layout(hwnd: HWND, state: *mut State) {
             height,
             SWP_SHOWWINDOW | SWP_NOACTIVATE,
         );
+        InvalidateRect(hwnd, std::ptr::null(), 1);
         if show_progress {
             update_progress(hwnd, state);
         }
@@ -574,15 +624,24 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
             }
             WM_CTLCOLORSTATIC => {
                 SetBkColor(wp as HDC, (*state).palette.background);
+                SetBkMode(wp as HDC, OPAQUE as i32);
                 SetTextColor(wp as HDC, (*state).palette.text);
                 (*state).brush as isize
             }
             WM_DRAWITEM if lp != 0 => {
-                paint_button(
-                    &*(lp as *const DRAWITEMSTRUCT),
-                    (*state).palette,
-                    (*state).font,
-                );
+                let item = &*(lp as *const DRAWITEMSTRUCT);
+                if item.CtlID as usize == ARTWORK {
+                    FillRect(item.hDC, &item.rcItem, (*state).brush);
+                    if let Some(artwork) = (*state)
+                        .current
+                        .as_ref()
+                        .and_then(|current| current.artwork.as_ref())
+                    {
+                        artwork.draw(item.hDC, item.rcItem, (*state).palette.background);
+                    }
+                } else {
+                    paint_button(item, (*state).palette, (*state).font);
+                }
                 1
             }
             WM_MOUSEACTIVATE => MA_NOACTIVATE as LRESULT,

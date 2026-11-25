@@ -16,6 +16,7 @@ Foundation and the first native application are implemented. Desktop Experience 
 - `src/preview.rs` owns the on-demand DWM thumbnail shown when hovering a running Dock tile.
 - `src/icons.rs` extracts authentic Shell icons on a bounded worker and renders monochrome or original colours.
 - `src/media.rs` subscribes to Windows media sessions and handles supported transport actions on a bounded WinRT worker.
+- `src/artwork.rs` decodes current session artwork on demand with bounded Windows Imaging streams.
 - `src/island.rs` presents real media metadata, controls and timeline progress in a borderless optional overlay.
 - `benchmarks/measure.ps1` samples Windows and Monolith memory, CPU and I/O.
 - The benchmark also records the busiest GPU engine from WDDM counters when available.
@@ -24,13 +25,13 @@ Foundation and the first native application are implemented. Desktop Experience 
 - `docs/top-bar.png` is a cropped live capture of the Top Bar status area.
 - `docs/island.png` shows the Island controlling a real Helium media session carrying local test audio.
 
-The Dock groups running windows by packaged application ID or verified process image, opens a native window chooser and previews the active or first visible window in a group. It can follow the active display, retract to a pointer reveal strip and show native Shell icons for pins and running groups. The Island shows title, artist, available transport controls and progress from the Windows timeline. Simultaneous per-display Docks, additional Top Bar modules, Island artwork, workspaces, Files, indexing, tuning, settings UI, Android integration and installers are pending.
+The Dock groups running windows by packaged application ID or verified process image, opens a native window chooser and previews the active or first visible window in a group. It can follow the active display, retract to a pointer reveal strip and show native Shell icons for pins and running groups. The Island shows title, artist, artwork, available transport controls and progress from the Windows timeline. Simultaneous per-display Docks, additional Top Bar modules, Control Center, workspaces, Files, indexing, tuning, settings UI, Android integration and installers are pending.
 
 ## Validation
 
 Validated on native Windows 11 26H2. Cargo formatting, Clippy with warnings denied, seventeen unit tests and the locked release build passed. A live desktop run verified shortcut launch, safe-mode exit and calculator output. `tests/desktop-smoke.ps1` verified filtering out hidden and owned windows, identifying fullscreen and minimised windows, refreshing after a window closes and switching to a minimised window. The same script with `-Dock` verified mouse clicks, minimisation, restoration, title changes, grouped menu selection, fullscreen suppression and recovery, Spotlight opening, clean exit and safe-mode suppression. The script with `-Pins` verified configured ordering, drag persistence after restart, deduplication, launching a real shortcut, rendered monochrome icon pixels and a native tooltip. An additional live check found packaged Notepad by the title of a temporary test document. The `-Spotlight` test verified the borderless styles, placement, calculation, Escape and focus-loss dismissal. The `-TopBar` test verified the clock, non-activating styles, fullscreen hiding, Spotlight and Exit. The `-AutoHide` test verified active-display placement, pointer reveal and pointer retraction on one attached monitor. The `-Preview` test verified actual DWM thumbnail pixels, focus preservation and cleanup on pointer departure. Live Spotlight, Dock and Top Bar captures were visually reviewed. Cross-build, high contrast and mixed-DPI testing remain pending.
 
-The media smoke test used an isolated local Helium profile and real Windows media-session events. It verified expansion, title and artist, play, pause, next, previous, progress, paused timeline stability and fullscreen recovery. The Island capture was visually reviewed.
+The media smoke test used an isolated local Helium profile and real Windows media-session events. It verified expansion, title and artist, artwork pixels from the session, play, pause, next, previous, progress, paused timeline stability and fullscreen recovery. The Island artwork capture was visually reviewed. The artwork checkpoint passed eighteen unit tests.
 
 Checked the declared licences of all locked dependencies, including the added Windows Runtime bindings. Cargo Audit passed with warnings denied across 31 lockfile entries.
 
@@ -58,4 +59,4 @@ The current Windows build returned Win32 error 1409 on a direct Win+Space regist
 
 ## Next task
 
-Load Windows media artwork on demand. Win+Space remains the target shortcut. Keep the experimental capture out of the public runtime until foreground activation and immediate typing are stable.
+Build the Control Center around native Windows controls. Win+Space remains the target shortcut. Keep the experimental capture out of the public runtime until foreground activation and immediate typing are stable.
