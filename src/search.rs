@@ -62,12 +62,16 @@ fn rank(name: &str, query: &str) -> Option<u8> {
         .then_some(2)
 }
 
-pub fn search(apps: &[App], query: &str, limit: usize) -> Vec<usize> {
+pub fn search<'a>(
+    titles: impl IntoIterator<Item = &'a str>,
+    query: &str,
+    limit: usize,
+) -> Vec<usize> {
     let query = query.trim().to_lowercase();
-    let mut hits: Vec<_> = apps
-        .iter()
+    let mut hits: Vec<_> = titles
+        .into_iter()
         .enumerate()
-        .filter_map(|(index, app)| rank(&app.name.to_lowercase(), &query).map(|rank| (rank, index)))
+        .filter_map(|(index, title)| rank(&title.to_lowercase(), &query).map(|rank| (rank, index)))
         .collect();
     hits.sort_unstable();
     hits.into_iter()
@@ -82,19 +86,15 @@ mod tests {
 
     #[test]
     fn ranks_prefix_then_substring_then_subsequence() {
-        let apps = [
+        let titles = [
             "Visual Studio Code",
             "My Code Editor",
             "Code Tools",
             "Terminal",
-        ]
-        .map(|name| App {
-            name: name.into(),
-            path: PathBuf::new(),
-        });
-        assert_eq!(search(&apps, " CoDE ", 3), [2, 0, 1]);
-        assert_eq!(search(&apps, "vsc", 1), [0]);
-        assert!(search(&apps, "zz", 10).is_empty());
+        ];
+        assert_eq!(search(titles, " CoDE ", 3), [2, 0, 1]);
+        assert_eq!(search(titles, "vsc", 1), [0]);
+        assert!(search(titles, "zz", 10).is_empty());
     }
 
     #[test]

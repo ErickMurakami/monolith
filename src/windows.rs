@@ -1,6 +1,7 @@
 use crate::{
     calculator::{self, CalculationError},
     config::{self, Language, Shortcut, Theme},
+    desktop::{self, ActivationError},
     search::{self, App},
 };
 use std::{
@@ -25,10 +26,17 @@ use windows_sys::Win32::{
 const HOTKEY: i32 = 1;
 const EDIT: usize = 100;
 const RESULTS: usize = 101;
+const RESULT_LIMIT: usize = 60;
+
+enum Match {
+    App(usize),
+    Window(usize),
+}
 
 struct State {
     apps: Option<Vec<App>>,
-    matches: Vec<usize>,
+    desktop: Option<desktop::Snapshot>,
+    matches: Vec<Match>,
     edit: HWND,
     results: HWND,
     font: HFONT,
@@ -36,6 +44,7 @@ struct State {
     surface: HBRUSH,
     dark: bool,
     portuguese: bool,
+    can_hide: bool,
 }
 
 impl Drop for State {
@@ -114,6 +123,7 @@ pub fn run() -> io::Result<()> {
         let dark = matches!(settings.theme, Theme::Dark);
         let mut state = Box::new(State {
             apps: None,
+            desktop: None,
             matches: Vec::new(),
             edit: null_mut(),
             results: null_mut(),
@@ -130,6 +140,7 @@ pub fn run() -> io::Result<()> {
             }),
             dark,
             portuguese: matches!(settings.language, Language::Portuguese),
+            can_hide: false,
         });
         let hwnd = CreateWindowExW(
             0,
@@ -243,8 +254,8 @@ unsafe fn run_window(
                 .as_ptr(),
             );
         }
-        let can_hide = resident && registered;
-        if !can_hide {
+        (*state).can_hide = resident && registered;
+        if !(*state).can_hide {
             show(hwnd, state);
         }
 
@@ -262,11 +273,12 @@ unsafe fn run_window(
             if msg.message == WM_KEYDOWN && (msg.hwnd == edit || msg.hwnd == results) {
                 match msg.wParam as u16 {
                     VK_ESCAPE => {
-                        if can_hide {
-                            ShowWindow(hwnd, SW_HIDE);
-                        } else {
-                            DestroyWindow(hwnd);
-                        }
+                        dismiss(hwnd, state);
+                        continue;
+                    }
+                    VK_F5 => {
+                        (*state).desktop = None;
+                        refresh(state);
                         continue;
                     }
                     VK_RETURN => {
@@ -302,9 +314,9 @@ unsafe fn show(hwnd: HWND, state: *mut State) {
     unsafe {
         if (*state).apps.is_none() {
             (*state).apps = Some(search::discover(roots()));
-            refresh(state);
         }
         if IsWindowVisible(hwnd) == 0 {
+            refresh(state);
             let mut cursor = POINT::default();
             if GetCursorPos(&mut cursor) != 0 {
                 let monitor = MonitorFromPoint(cursor, MONITOR_DEFAULTTONEAREST);
@@ -334,6 +346,17 @@ unsafe fn show(hwnd: HWND, state: *mut State) {
         SetForegroundWindow(hwnd);
         SetFocus((*state).edit);
         SendMessageW((*state).edit, EM_SETSEL, 0, -1);
+    }
+}
+
+unsafe fn dismiss(hwnd: HWND, state: *mut State) {
+    unsafe {
+        if (*state).can_hide {
+            (*state).desktop = None;
+            ShowWindow(hwnd, SW_HIDE);
+        } else {
+            DestroyWindow(hwnd);
+        }
     }
 }
 
@@ -398,16 +421,23 @@ unsafe fn refresh(state: *mut State) {
         SendMessageW(results, WM_SETREDRAW, 0, 0);
         SendMessageW(results, LB_RESETCONTENT, 0, 0);
         (*state).matches.clear();
-        if let Some(expression) = query.trim_start().strip_prefix('=') {
+        let query = query.trim_start();
+        if let Some(title) = query.strip_prefix('@') {
+            fill_windows(state, results, title);
+        } else if let Some(expression) = query.strip_prefix('=') {
+            (*state).desktop = None;
             if !expression.trim().is_empty() {
-                let label = wide(&calculation_label(expression, (*state).portuguese));
-                SendMessageW(results, LB_ADDSTRING, 0, label.as_ptr() as isize);
+                add_row(results, &calculation_label(expression, (*state).portuguese));
             }
         } else {
-            for index in search::search(apps, &query, 60) {
-                let label = wide(&apps[index].name);
-                if SendMessageW(results, LB_ADDSTRING, 0, label.as_ptr() as isize) >= 0 {
-                    (*state).matches.push(index);
+            (*state).desktop = None;
+            for index in search::search(
+                apps.iter().map(|app| app.name.as_str()),
+                query,
+                RESULT_LIMIT,
+            ) {
+                if add_row(results, &apps[index].name) {
+                    (*state).matches.push(Match::App(index));
                 }
             }
         }
@@ -416,6 +446,61 @@ unsafe fn refresh(state: *mut State) {
         }
         SendMessageW(results, WM_SETREDRAW, 1, 0);
         InvalidateRect(results, std::ptr::null(), 1);
+    }
+}
+
+unsafe fn add_row(results: HWND, label: &str) -> bool {
+    unsafe { SendMessageW(results, LB_ADDSTRING, 0, wide(label).as_ptr() as isize) >= 0 }
+}
+
+unsafe fn fill_windows(state: *mut State, results: HWND, title: &str) {
+    unsafe {
+        let portuguese = (*state).portuguese;
+        if (*state).desktop.is_none() {
+            (*state).desktop = desktop::snapshot().ok();
+        }
+        let Some(desktop) = (*state).desktop.as_ref() else {
+            add_row(
+                results,
+                if portuguese {
+                    "Janelas indisponíveis"
+                } else {
+                    "Windows unavailable"
+                },
+            );
+            return;
+        };
+        let hits = search::search(
+            desktop.windows.iter().map(|window| window.title.as_str()),
+            title,
+            RESULT_LIMIT,
+        );
+        for index in hits {
+            let window = &desktop.windows[index];
+            let mut label = window.title.clone();
+            if window.minimised {
+                label.push_str(if portuguese {
+                    "   ·   Minimizada"
+                } else {
+                    "   ·   Minimised"
+                });
+            } else if window.fullscreen {
+                label.push_str(if portuguese {
+                    "   ·   Tela cheia"
+                } else {
+                    "   ·   Fullscreen"
+                });
+            }
+            if desktop.monitor_count > 1
+                && let Some(monitor) = window.monitor
+            {
+                use std::fmt::Write;
+                let _ = write!(label, "   ·   Monitor {}", monitor + 1);
+            }
+            if add_row(results, &label) {
+                (*state).matches.push(Match::Window(index));
+            }
+        }
     }
 }
 
@@ -438,8 +523,13 @@ unsafe fn open_selected(hwnd: HWND, state: *mut State) {
     unsafe {
         let selection = SendMessageW((*state).results, LB_GETCURSEL, 0, 0);
         let matches = &(*state).matches;
-        let Some(&index) = matches.get(selection as usize) else {
-            return;
+        let index = match matches.get(selection as usize) {
+            Some(&Match::App(index)) => index,
+            Some(&Match::Window(index)) => {
+                switch_window(hwnd, state, index);
+                return;
+            }
+            None => return,
         };
         let Some(app) = (*state).apps.as_ref().and_then(|apps| apps.get(index)) else {
             return;
@@ -458,6 +548,34 @@ unsafe fn open_selected(hwnd: HWND, state: *mut State) {
                 "Windows could not open the shortcut ({})",
                 result as isize
             ));
+        }
+    }
+}
+
+unsafe fn switch_window(hwnd: HWND, state: *mut State, index: usize) {
+    unsafe {
+        let Some(window) = (*state)
+            .desktop
+            .as_ref()
+            .and_then(|desktop| desktop.windows.get(index))
+        else {
+            return;
+        };
+        match window.activate() {
+            Ok(()) => dismiss(hwnd, state),
+            Err(error) => {
+                (*state).desktop = None;
+                refresh(state);
+                let message = match (error, (*state).portuguese) {
+                    (ActivationError::Unavailable, false) => "This window is no longer available.",
+                    (ActivationError::Unavailable, true) => "Esta janela não está mais disponível.",
+                    (ActivationError::Refused, false) => "Windows could not switch to this window.",
+                    (ActivationError::Refused, true) => {
+                        "O Windows não conseguiu ativar esta janela."
+                    }
+                };
+                report(message);
+            }
         }
     }
 }

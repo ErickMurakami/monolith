@@ -4,6 +4,8 @@
 mod calculator;
 #[cfg(any(windows, test))]
 mod config;
+#[cfg(windows)]
+mod desktop;
 #[cfg(any(windows, test))]
 mod search;
 #[cfg(windows)]

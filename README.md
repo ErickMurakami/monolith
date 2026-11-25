@@ -15,6 +15,8 @@ Type an application name, use the arrow keys to select a match, and press Enter 
 
 Start a query with `=` to calculate locally. Try `=(12 + 3) / 2`. The calculator supports decimal numbers with a decimal point, parentheses, addition, subtraction, multiplication and division.
 
+Start a query with `@` to find an open window by its title. Press Enter or double-click to switch to it, restoring it first if it is minimised. Press F5 to refresh the list. The window search uses desktop windows exposed by Windows, including packaged applications when they have an eligible desktop window.
+
 Monolith attempts to register Win+Space. Windows can reserve that combination. If it is unavailable, the window stays accessible and reports the conflict in its title. To change the binding, create `%LOCALAPPDATA%\Monolith\config.toml` and restart Monolith.
 
 ```toml
@@ -27,7 +29,7 @@ Invalid settings are preserved on disk and defaults are loaded. Rename the file 
 
 ## Project status
 
-- Implemented in the experimental build. Native Win32 launcher, local ranking of desktop shortcuts, configurable shortcut, light and dark themes, and safe start.
+- Implemented in the experimental build. Native Win32 launcher, local ranking of desktop shortcuts and open windows, calculator, configurable shortcut, light and dark themes, and safe start.
 - Planned. Dock, Top Bar, media Island, workspaces, Files, indexing, optimisation, Android continuity, installer and release validation.
 - Unsupported by the current launcher. UWP app discovery, file search, web search and arbitrary command execution.
 

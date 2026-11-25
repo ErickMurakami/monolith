@@ -7,3 +7,4 @@
 - Added Windows CI for build, lint and test validation.
 - Added reproducible Windows and launcher performance sampling.
 - Added local arithmetic in Spotlight, with precedence and input error handling.
+- Added title search and switching for open windows, with monitor and fullscreen detection.
