@@ -679,3 +679,87 @@ After completing a meaningful checkpoint, report only:
 Then continue implementation when authorised and execution budget permits.
 
 The goal is a reliable daily-driver desktop experience, not an impressive development report.
+
+
+## Approved Visual Design — Mandatory Reference
+
+The founder-approved visual references located in `docs/design/` define the official target appearance of Monolith.
+
+Read `docs/design/DESIGN.md` and inspect the relevant reference image before implementing or refining a visual component.
+
+These references represent the intended final product, not the current implementation.
+
+### Approved References
+
+- `docs/design/dynamic-island.png`
+- `docs/design/spotlight.png`
+- `docs/design/dock.png`
+- `docs/design/files.png`
+- `docs/design/workspaces.png`
+- `docs/design/notifications.png`
+
+### Mandatory Layout Corrections
+
+Where reference images conflict with these requirements, the written requirements take precedence:
+
+- The Dynamic Island must remain horizontally centred at the top of the active desktop.
+- The clock, date, battery, connectivity and system indicators must be positioned in the upper-right status area.
+- Never place the clock or system tray in the bottom dock.
+- The Dock must remain independently floating and horizontally centred at the bottom.
+- Incoming notifications must appear below the Dynamic Island media player.
+- Incoming notifications must not displace the media player.
+- Notification overlays must remain compact and unobtrusive.
+- The notification centre must integrate native PC and paired Android notifications while preserving their source identity.
+- Do not display permanent Monolith branding, logos or promotional slogans on the desktop.
+- Fullscreen application workspaces must follow predictable spatial navigation inspired by macOS.
+- Wallpaper is user-configurable and must remain independent of the interface.
+
+### Implementation Strategy
+
+Preserve the approved visual direction throughout functional development.
+
+Temporary native controls are acceptable while implementing and stabilising functionality, but they are not the final design.
+
+Do not introduce alternative visual identities without founder approval.
+
+During the dedicated visual refinement milestone:
+
+- Match the approved references as closely as practical.
+- Standardise typography, spacing, geometry and iconography.
+- Implement smooth, purposeful transitions.
+- Preserve native Rust performance.
+- Avoid continuous rendering when the interface is idle.
+- Validate visual consistency across all components.
+- Verify the appearance using real Windows screenshots.
+
+Reference images are visual specifications, not static application assets.
+
+Never hardcode example notifications, repository states, media metadata or application content from the mockups.
+
+Display real runtime information and only expose controls supported by the underlying system.
+
+Functional correctness, recovery and Windows compatibility remain mandatory.
+
+The final objective is a native desktop experience with premium visual quality, predictable interactions and minimal resource consumption.
+
+### Fast-Track Reference Implementation
+
+For every complex Windows integration, prioritise existing proven implementations over speculative development.
+
+- Search the relevant Windhawk mod source code before designing equivalent functionality.
+- Inspect specific upstream files rather than entire repositories.
+- Identify the minimum native APIs, interfaces, event handlers and integration mechanisms required.
+- Prefer adapting working solutions into idiomatic Rust using windows-rs.
+- Reuse compatible Rust implementations from GlazeWM, Komorebi and other established projects where appropriate.
+- Avoid mechanically translating unrelated C++ infrastructure.
+- Verify licensing before adapting or reusing source code.
+- Preserve Monolith's existing architecture, performance requirements and approved visual design.
+- Cache concise technical findings in the relevant architecture documentation to avoid repeating research across sessions.
+- Parallelise independent research and implementation tasks when the execution budget permits.
+- Prefer a working native implementation followed by targeted validation over prolonged speculative investigation.
+- If an existing implementation solves the problem reliably, do not spend development resources reinventing it.
+- If the reference approach requires invasive integration, preserve the existing approval and recovery requirements.
+
+The objective is to minimise research duplication, implementation time, token consumption and unnecessary architectural complexity.
+
+Reference-driven development must accelerate the delivery of the founder's daily-driver experience, not expand the project scope.
