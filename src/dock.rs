@@ -2,7 +2,7 @@
 
 use crate::{
     config,
-    desktop::{self, Window},
+    desktop::{self, WindowGroup},
     overlay::{self, Palette},
     search::App,
     windows::{launch_shortcut, report_for, wide},
@@ -54,7 +54,7 @@ struct PinDrag {
 struct State {
     launcher: HWND,
     buttons: Vec<HWND>,
-    windows: Vec<Window>,
+    groups: Vec<WindowGroup>,
     pins: Vec<App>,
     order_path: PathBuf,
     drag: Option<PinDrag>,
@@ -110,7 +110,7 @@ impl Dock {
                 state: Box::new(State {
                     launcher,
                     buttons: Vec::new(),
-                    windows: Vec::new(),
+                    groups: Vec::new(),
                     pins: settings.pins,
                     order_path: settings.order_path,
                     drag: None,
@@ -381,7 +381,7 @@ unsafe fn refresh(hwnd: HWND, state: *mut State) {
             || desktop::foreground_covers_monitor(monitor, &display.rcMonitor)
         {
             ShowWindow(hwnd, SW_HIDE);
-            (*state).windows.clear();
+            (*state).groups.clear();
             return;
         }
 
@@ -416,15 +416,14 @@ unsafe fn refresh(hwnd: HWND, state: *mut State) {
         let step = scale(116).min(((work.right - work.left - 2 * inset) / 2).max(1));
         let capacity =
             (((work.right - work.left - 2 * inset) / step) - 2).clamp(0, CAPACITY as i32) as usize;
-        let mut windows = desktop::snapshot()
-            .map(|snapshot| snapshot.windows)
+        let mut groups = desktop::snapshot()
+            .map(|snapshot| desktop::group_windows(snapshot.windows))
             .unwrap_or_default();
-        windows.sort_by_cached_key(|window| window.title.to_lowercase());
         let pin_count = (*state).pins.len().min(capacity);
         (*state).visible_pins = pin_count;
-        windows.truncate(capacity - pin_count);
-        (*state).windows = windows;
-        let button_count = pin_count + (*state).windows.len() + 2;
+        groups.truncate(capacity - pin_count);
+        (*state).groups = groups;
+        let button_count = pin_count + (*state).groups.len() + 2;
         let width = button_count as i32 * step + 2 * inset;
         let height = scale(37);
         let left = work.left + ((work.right - work.left - width) / 2).max(0);
@@ -437,19 +436,17 @@ unsafe fn refresh(hwnd: HWND, state: *mut State) {
         };
         let exit = if (*state).portuguese { "Sair" } else { "Exit" };
         let buttons = &(*state).buttons;
-        let windows = &(*state).windows;
+        let groups = &(*state).groups;
         let pins = &(*state).pins;
         for (index, &button) in buttons.iter().enumerate() {
             let (position, label) = match index {
-                0 => (0, spotlight),
-                1 => (button_count as i32 - 1, exit),
+                0 => (0, spotlight.to_owned()),
+                1 => (button_count as i32 - 1, exit.to_owned()),
                 _ => {
                     let label = if index - 2 < pin_count {
-                        Some(pins[index - 2].name.as_str())
+                        Some(pins[index - 2].name.clone())
                     } else {
-                        windows
-                            .get(index - 2 - pin_count)
-                            .map(|window| window.title.as_str())
+                        groups.get(index - 2 - pin_count).map(WindowGroup::caption)
                     };
                     let Some(label) = label else {
                         ShowWindow(button, SW_HIDE);
@@ -458,7 +455,7 @@ unsafe fn refresh(hwnd: HWND, state: *mut State) {
                     (index as i32 - 1, label)
                 }
             };
-            SetWindowTextW(button, wide(label).as_ptr());
+            SetWindowTextW(button, wide(&label).as_ptr());
             SetWindowPos(
                 button,
                 null_mut(),
@@ -522,7 +519,7 @@ unsafe fn draw(state: *mut State, item: &DRAWITEMSTRUCT) {
             &mut text_area,
             DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX,
         );
-        let windows = &(*state).windows;
+        let groups = &(*state).groups;
         let drop_target = pin_index(item.CtlID, (*state).visible_pins)
             .is_some_and(|index| (*state).drag.as_ref().and_then(|drag| drag.over) == Some(index));
         if drop_target
@@ -530,8 +527,8 @@ unsafe fn draw(state: *mut State, item: &DRAWITEMSTRUCT) {
                 .CtlID
                 .checked_sub(FIRST_WINDOW)
                 .and_then(|index| (index as usize).checked_sub((*state).visible_pins))
-                .and_then(|index| windows.get(index))
-                .is_some_and(|window| window.active)
+                .and_then(|index| groups.get(index))
+                .is_some_and(WindowGroup::active)
         {
             let centre = area.left + (area.right - area.left) / 2;
             let indicator = RECT {
@@ -575,14 +572,9 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
                             launch_shortcut(hwnd, &path);
                             return 0;
                         }
-                        let windows = &(*state).windows;
-                        let target = windows
-                            .get(index - (*state).visible_pins)
-                            .map(|window| window.target);
-                        if let Some(target) = target
-                            && target.toggle().is_err()
-                        {
-                            schedule_refresh(hwnd);
+                        let groups = &(*state).groups;
+                        if let Some(group) = groups.get(index - (*state).visible_pins) {
+                            show_group(hwnd, lp as HWND, group);
                         }
                     }
                     _ => {}
@@ -612,5 +604,52 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
             WM_MOUSEACTIVATE => MA_NOACTIVATE as LRESULT,
             _ => DefWindowProcW(hwnd, message, wp, lp),
         }
+    }
+}
+
+unsafe fn show_group(hwnd: HWND, button: HWND, group: &WindowGroup) {
+    unsafe {
+        if group.windows.len() == 1 {
+            let target = group.windows[0].target;
+            if target.toggle().is_err() {
+                schedule_refresh(hwnd);
+            }
+            return;
+        }
+        let menu = CreatePopupMenu();
+        if menu.is_null() {
+            return;
+        }
+        // TrackPopupMenuEx pumps nested messages. Do not access group after it starts.
+        let mut targets = Vec::with_capacity(group.windows.len());
+        for window in &group.windows {
+            let title = wide(&window.title.replace('&', "&&"));
+            let id = targets.len() + 1;
+            let checked = if window.active { MF_CHECKED } else { 0 };
+            if AppendMenuW(menu, MF_STRING | checked, id, title.as_ptr()) != 0 {
+                targets.push(window.target);
+            }
+        }
+        let mut rect = RECT::default();
+        if GetWindowRect(button, &mut rect) != 0 && !targets.is_empty() {
+            SetForegroundWindow(hwnd);
+            let command = TrackPopupMenuEx(
+                menu,
+                TPM_BOTTOMALIGN | TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON,
+                rect.left,
+                rect.top,
+                hwnd,
+                null_mut(),
+            );
+            PostMessageW(hwnd, WM_NULL, 0, 0);
+            if let Some(target) = (command as usize)
+                .checked_sub(1)
+                .and_then(|index| targets.get(index))
+                && target.activate().is_err()
+            {
+                schedule_refresh(hwnd);
+            }
+        }
+        DestroyMenu(menu);
     }
 }

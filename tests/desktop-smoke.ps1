@@ -18,11 +18,21 @@ public static class DesktopSmoke {
     [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hwnd);
     [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr hwnd);
     [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hwnd);
+    [DllImport("user32.dll")] public static extern uint GetDoubleClickTime();
     [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint process);
     [DllImport("user32.dll", EntryPoint="GetWindowLongW")] public static extern int Style(IntPtr hwnd, int index);
     [DllImport("user32.dll", CharSet=CharSet.Unicode)]
     public static extern IntPtr FindWindowEx(IntPtr parent, IntPtr after, string cls, string title);
     public static IntPtr FindClass(string cls) { return FindWindowEx(IntPtr.Zero, IntPtr.Zero, cls, null); }
+    public static IntPtr FindVisibleForProcess(string cls, uint process) {
+        IntPtr handle = IntPtr.Zero;
+        while ((handle = FindWindowEx(IntPtr.Zero, handle, cls, null)) != IntPtr.Zero) {
+            uint owner;
+            GetWindowThreadProcessId(handle, out owner);
+            if (owner == process && IsWindowVisible(handle)) return handle;
+        }
+        return IntPtr.Zero;
+    }
     [DllImport("user32.dll", EntryPoint="SendMessageW", CharSet=CharSet.Unicode)]
     public static extern IntPtr Write(IntPtr hwnd, uint message, UIntPtr value, string text);
     [DllImport("user32.dll", EntryPoint="SendMessageW", CharSet=CharSet.Unicode)]
@@ -56,11 +66,17 @@ public static class DesktopSmoke {
 
     // Only click a known test surface if it is unobstructed.
     public static bool Click(IntPtr target) {
+        return ClickAt(target, 0.5);
+    }
+    public static bool ClickAt(IntPtr target, double verticalPosition) {
         Rect bounds;
         Point original;
         if (target == IntPtr.Zero || !GetWindowRect(target, out bounds) || !GetCursorPos(out original))
             return false;
-        var point = new Point { X = (bounds.Left + bounds.Right) / 2, Y = (bounds.Top + bounds.Bottom) / 2 };
+        var point = new Point {
+            X = (bounds.Left + bounds.Right) / 2,
+            Y = bounds.Top + (int)((bounds.Bottom - bounds.Top) * verticalPosition),
+        };
         if (WindowFromPoint(point) != target || !SetCursorPos(point.X, point.Y))
             return false;
         try {
@@ -70,7 +86,9 @@ public static class DesktopSmoke {
                 new Input { Mouse = new MouseInput { Flags = 0x0002 } },
                 new Input { Mouse = new MouseInput { Flags = 0x0004 } },
             };
-            return SendInput(2, events, Marshal.SizeOf(typeof(Input))) == 2;
+            bool sent = SendInput(2, events, Marshal.SizeOf(typeof(Input))) == 2;
+            if (sent) System.Threading.Thread.Sleep(100);
+            return sent;
         } finally {
             Point current;
             if (GetCursorPos(out current) && current.X == point.X && current.Y == point.Y)
@@ -129,6 +147,21 @@ function Get-Rows($List) {
     }
 }
 
+function Save-SurfaceCapture($Window, [string]$Path, [int]$Inset = 2) {
+    Add-Type -AssemblyName System.Drawing
+    Start-Sleep -Milliseconds 100
+    $bounds = [DesktopSmoke]::Bounds($Window)
+    $image = [Drawing.Bitmap]::new(($bounds[2]-$bounds[0]-2*$Inset), ($bounds[3]-$bounds[1]-2*$Inset))
+    $graphics = [Drawing.Graphics]::FromImage($image)
+    try {
+        $graphics.CopyFromScreen(($bounds[0]+$Inset), ($bounds[1]+$Inset), 0, 0, $image.Size)
+        $image.Save([IO.Path]::GetFullPath($Path))
+    } finally {
+        $graphics.Dispose()
+        $image.Dispose()
+    }
+}
+
 function Focus-Fixture($Form) {
     [void][DesktopSmoke]::SetForegroundWindow($Form.Handle)
     if ([DesktopSmoke]::GetForegroundWindow() -ne $Form.Handle) {
@@ -176,18 +209,7 @@ function Invoke-SpotlightSmoke($Application) {
             [void][DesktopSmoke]::Write($edit, 0xC, [UIntPtr]::Zero, '=(12 + 3) / 2')
             if (@(Get-Rows $list) -ne '7.5') { throw 'Calculation result changed.' }
             if ($Capture -and $dismissal -eq 'focus') {
-                Add-Type -AssemblyName System.Drawing
-                Start-Sleep -Milliseconds 100
-                $bounds = [DesktopSmoke]::Bounds($window)
-                $image = [Drawing.Bitmap]::new(($bounds[2]-$bounds[0]-4), ($bounds[3]-$bounds[1]-4))
-                $graphics = [Drawing.Graphics]::FromImage($image)
-                try {
-                    $graphics.CopyFromScreen(($bounds[0]+2), ($bounds[1]+2), 0, 0, $image.Size)
-                    $image.Save([IO.Path]::GetFullPath($Capture))
-                } finally {
-                    $graphics.Dispose()
-                    $image.Dispose()
-                }
+                Save-SurfaceCapture $window $Capture
             }
             if ($dismissal -eq 'focus') { Focus-Fixture $fixture }
             else { [void][DesktopSmoke]::Post($edit, 0x100, [UIntPtr]::new([uint32]27), [IntPtr]::Zero) }
@@ -278,6 +300,7 @@ function Invoke-DockSmoke($Application) {
     $prefix = '!' + [guid]::NewGuid().ToString('N').Substring(0, 10)
     $target = New-Object Windows.Forms.Form
     $fullscreen = New-Object Windows.Forms.Form
+    $second = New-Object Windows.Forms.Form
     $launcher = $null
     $dockWindow = [IntPtr]::Zero
     $localData = $env:LOCALAPPDATA
@@ -311,18 +334,45 @@ function Invoke-DockSmoke($Application) {
         Wait-Until { ![DesktopSmoke]::IsWindowVisible($dockWindow) } 'The Dock did not hide for fullscreen.'
         $fullscreen.SetBounds(40, 40, 640, 420)
         Wait-Until { [DesktopSmoke]::IsWindowVisible($dockWindow) } 'The Dock did not return after exiting fullscreen.'
+        $fullscreen.Close()
+        Wait-Until {
+            [DesktopSmoke]::FindWindowEx($dockWindow, [IntPtr]::Zero, 'Button', $target.Text) -ne [IntPtr]::Zero
+        } 'The remaining window did not return to a single-window Dock tile.'
 
+        Start-Sleep -Milliseconds ([DesktopSmoke]::GetDoubleClickTime() + 50)
         $tile = [DesktopSmoke]::FindWindowEx($dockWindow, [IntPtr]::Zero, 'Button', $target.Text)
         if (![DesktopSmoke]::Click($tile)) { throw 'The minimised Dock button could not be clicked.' }
+        Wait-Until { ![DesktopSmoke]::IsIconic($target.Handle) } 'Clicking a minimised window did not restore it.'
         Wait-Until {
-            ![DesktopSmoke]::IsIconic($target.Handle) -and
             [DesktopSmoke]::GetForegroundWindow() -eq $target.Handle
-        } 'Clicking a minimised window did not restore and activate it.'
+        } 'The restored window did not receive foreground focus.'
 
         $target.Text = "$prefix renamed"
         Wait-Until {
             [DesktopSmoke]::FindWindowEx($dockWindow, [IntPtr]::Zero, 'Button', $target.Text) -ne [IntPtr]::Zero
         } 'The Dock did not reflect the window title change.'
+        $second.Text = "$prefix additional"
+        $second.Show()
+        Focus-Fixture $target
+        $groupLabel = $second.Text + ' (2)'
+        Wait-Until {
+            [DesktopSmoke]::FindWindowEx($dockWindow, [IntPtr]::Zero, 'Button', $groupLabel) -ne [IntPtr]::Zero
+        } 'The two windows from the same application did not group.'
+        Start-Sleep -Milliseconds ([DesktopSmoke]::GetDoubleClickTime() + 50)
+        $groupTile = [DesktopSmoke]::FindWindowEx($dockWindow, [IntPtr]::Zero, 'Button', $groupLabel)
+        if (![DesktopSmoke]::Click($groupTile)) { throw 'Could not open the window-group menu.' }
+        Wait-Until {
+            [DesktopSmoke]::FindVisibleForProcess('#32768', [uint32]$launcher.Id) -ne [IntPtr]::Zero
+        } 'The window-group menu did not appear.'
+        $menu = [DesktopSmoke]::FindVisibleForProcess('#32768', [uint32]$launcher.Id)
+        if ($Capture) { Save-SurfaceCapture $menu $Capture 6 }
+        if (![DesktopSmoke]::ClickAt($menu, 0.25)) {
+            throw 'Could not select the first window from the group menu.'
+        }
+        Wait-Until {
+            ![DesktopSmoke]::IsWindowVisible($menu) -and [DesktopSmoke]::GetForegroundWindow() -eq $second.Handle
+        } 'Selecting a grouped window did not activate it.'
+        $second.Close()
         $search = [DesktopSmoke]::FindWindowEx($dockWindow, [IntPtr]::Zero, 'Button', 'Search')
         if (![DesktopSmoke]::Click($search)) { throw 'Search could not be clicked.' }
         Wait-Until {
@@ -343,7 +393,7 @@ function Invoke-DockSmoke($Application) {
         }
         [void]$launcher.CloseMainWindow()
         Wait-Until { $launcher.HasExited } 'Safe-mode Spotlight did not exit.'
-        'Dock activation, fullscreen, live titles, Spotlight, shutdown and safe mode passed.'
+        'Dock activation, fullscreen, live titles, grouping, Spotlight, shutdown and safe mode passed.'
     } finally {
         if ($launcher -and !$launcher.HasExited) {
             if ($dockWindow -ne [IntPtr]::Zero) {
@@ -352,6 +402,7 @@ function Invoke-DockSmoke($Application) {
             if (!$launcher.WaitForExit(2000)) { Stop-Process -InputObject $launcher }
         }
         $fullscreen.Dispose()
+        $second.Dispose()
         $target.Dispose()
         $env:LOCALAPPDATA = $localData
     }

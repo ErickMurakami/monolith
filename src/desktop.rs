@@ -1,14 +1,18 @@
 //! Read-only desktop discovery and explicit, user-initiated window activation.
 
-use std::{io, mem::size_of, ptr::null_mut};
+use std::{collections::HashMap, io, mem::size_of, ptr::null_mut};
 use windows_sys::Win32::{
-    Foundation::{HWND, LPARAM, RECT},
+    Foundation::{CloseHandle, ERROR_INSUFFICIENT_BUFFER, GetLastError, HWND, LPARAM, RECT},
     Graphics::{
         Dwm::{DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS, DwmGetWindowAttribute},
         Gdi::{
             EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITOR_DEFAULTTONULL,
             MONITORINFO, MonitorFromWindow,
         },
+    },
+    Storage::Packaging::Appx::GetApplicationUserModelId,
+    System::Threading::{
+        OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
     },
     UI::WindowsAndMessaging::{
         EnumWindows, GW_OWNER, GWL_EXSTYLE, GWL_STYLE, GetDesktopWindow, GetForegroundWindow,
@@ -38,6 +42,102 @@ pub struct WindowTarget {
 pub struct Snapshot {
     pub windows: Vec<Window>,
     pub monitor_count: usize,
+}
+
+#[derive(Clone, PartialEq, Eq, Hash)]
+enum AppIdentity {
+    Packaged(String),
+    Executable(String),
+}
+
+pub struct WindowGroup {
+    pub windows: Vec<Window>,
+}
+
+impl WindowGroup {
+    pub fn caption(&self) -> String {
+        let Some(first) = self.windows.first() else {
+            return String::new();
+        };
+        if self.windows.len() == 1 {
+            first.title.clone()
+        } else {
+            format!("{} ({})", first.title, self.windows.len())
+        }
+    }
+
+    pub fn active(&self) -> bool {
+        self.windows.iter().any(|window| window.active)
+    }
+}
+
+pub fn group_windows(mut windows: Vec<Window>) -> Vec<WindowGroup> {
+    windows.sort_by_cached_key(|window| window.title.to_lowercase());
+    let mut apps = HashMap::new();
+    let mut group_indices = HashMap::new();
+    let mut groups: Vec<WindowGroup> = Vec::new();
+    let mut image = vec![0_u16; 1024];
+    for window in windows {
+        let app = apps
+            .entry(window.target.process)
+            .or_insert_with(|| process_identity(window.target.process, &mut image));
+        let Some(app) = app else {
+            // A shared host or inaccessible process stays independent.
+            groups.push(WindowGroup {
+                windows: vec![window],
+            });
+            continue;
+        };
+        let index = *group_indices.entry(app.clone()).or_insert_with(|| {
+            groups.push(WindowGroup {
+                windows: Vec::new(),
+            });
+            groups.len() - 1
+        });
+        groups[index].windows.push(window);
+    }
+    groups
+}
+
+fn process_identity(pid: u32, image: &mut Vec<u16>) -> Option<AppIdentity> {
+    // Only query process metadata and close each handle before leaving the snapshot.
+    unsafe {
+        let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if process.is_null() {
+            return None;
+        }
+        let mut app_id = [0_u16; 512];
+        let mut length = app_id.len() as u32;
+        let result = if GetApplicationUserModelId(process, &mut length, app_id.as_mut_ptr()) == 0
+            && length > 1
+        {
+            Some(AppIdentity::Packaged(
+                String::from_utf16_lossy(&app_id[..length as usize - 1]).to_lowercase(),
+            ))
+        } else {
+            let mut length = image.len() as u32;
+            let mut read = QueryFullProcessImageNameW(process, 0, image.as_mut_ptr(), &mut length);
+            if read == 0 && GetLastError() == ERROR_INSUFFICIENT_BUFFER && image.len() < 32768 {
+                image.resize(32768, 0);
+                length = image.len() as u32;
+                read = QueryFullProcessImageNameW(process, 0, image.as_mut_ptr(), &mut length);
+            }
+            if read != 0 && length != 0 {
+                let image = String::from_utf16_lossy(&image[..length as usize]).to_lowercase();
+                let name = image.rsplit('\\').next();
+                // The legacy packaged-app frame process can host unrelated applications.
+                if matches!(name, Some("applicationframehost.exe" | "wwahost.exe")) {
+                    None
+                } else {
+                    Some(AppIdentity::Executable(image))
+                }
+            } else {
+                None
+            }
+        };
+        CloseHandle(process);
+        result
+    }
 }
 
 struct Monitor {
