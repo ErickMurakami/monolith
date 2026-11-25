@@ -31,17 +31,18 @@ dock = false               # set true to opt in
 dock_pins = ["Visual Studio Code"] # exact Start menu shortcut names, in display order
 dock_monitor = "primary"           # primary, active
 dock_auto_hide = false             # reveal at the bottom of the work area
+dock_original_icons = false       # keep the original Shell colours when true
 top_bar = false            # set true to opt in
 ```
 
-Pins are resolved from local Start menu shortcuts. Missing and repeated names are skipped. Pins take the first available slots in the Dock. Drag a pin onto another pin to reorder it. The order is saved in `dock-order.toml` next to the configuration and takes precedence over the list. Remove the order file to restore configuration order.
+Pins are resolved from local Start menu shortcuts. Missing and repeated names are skipped. Pins take the first available slots in the Dock. Drag a pin onto another pin to reorder it. The order is saved in `dock-order.toml` next to the configuration and takes precedence over the list. Remove the order file to restore configuration order. Windows Shell icons are monochrome by default, with names available through native tooltips and accessibility. A tile uses its text label when the Shell cannot supply an icon.
 
 Invalid settings are preserved on disk and defaults are loaded. Rename the file to restore defaults on the next start.
 
 ## Project status
 
 - Implemented in the experimental build. Native Win32 launcher, local ranking of desktop shortcuts and open windows, calculator, opt-in running-window Dock, configurable shortcut, light and dark themes, and safe start.
-- Planned. Dock icons and simultaneous per-display Docks, additional Top Bar modules, media Island, workspaces, Files, indexing, optimisation, Android continuity, installer and release validation.
+- Planned. Simultaneous per-display Docks, additional Top Bar modules, media Island, workspaces, Files, indexing, optimisation, Android continuity, installer and release validation.
 - Unsupported by the current launcher. UWP app discovery, file search, web search and arbitrary command execution.
 
 The UI runs on the Win32 message queue and renders on demand. Spotlight builds its catalog on first use. Search and configuration are independent of Win32, with unit tests for ranking, discovery and recovery.
@@ -52,6 +53,6 @@ See [project status](MONOLITH_STATUS.md) and [benchmark procedure](benchmarks/RE
 
 ![Borderless Spotlight showing a calculation on Windows](docs/spotlight.png)
 
-![Cropped Dock capture showing Search and an active verification window](docs/dock.png)
+![Cropped Dock capture showing the monochrome Shell icon for a verification shortcut](docs/dock.png)
 
 ![Cropped Top Bar capture showing system power and clock](docs/top-bar.png)

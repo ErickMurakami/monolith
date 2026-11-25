@@ -1,6 +1,6 @@
 //! Read-only desktop discovery and explicit, user-initiated window activation.
 
-use std::{collections::HashMap, io, mem::size_of, ptr::null_mut};
+use std::{collections::HashMap, io, mem::size_of, path::PathBuf, ptr::null_mut};
 use windows_sys::Win32::{
     Foundation::{CloseHandle, ERROR_INSUFFICIENT_BUFFER, GetLastError, HWND, LPARAM, RECT},
     Graphics::{
@@ -52,6 +52,7 @@ enum AppIdentity {
 
 pub struct WindowGroup {
     pub windows: Vec<Window>,
+    pub icon_path: Option<PathBuf>,
 }
 
 impl WindowGroup {
@@ -81,16 +82,18 @@ pub fn group_windows(mut windows: Vec<Window>) -> Vec<WindowGroup> {
         let app = apps
             .entry(window.target.process)
             .or_insert_with(|| process_identity(window.target.process, &mut image));
-        let Some(app) = app else {
+        let Some((app, icon_path)) = app else {
             // A shared host or inaccessible process stays independent.
             groups.push(WindowGroup {
                 windows: vec![window],
+                icon_path: None,
             });
             continue;
         };
         let index = *group_indices.entry(app.clone()).or_insert_with(|| {
             groups.push(WindowGroup {
                 windows: Vec::new(),
+                icon_path: icon_path.clone(),
             });
             groups.len() - 1
         });
@@ -99,7 +102,7 @@ pub fn group_windows(mut windows: Vec<Window>) -> Vec<WindowGroup> {
     groups
 }
 
-fn process_identity(pid: u32, image: &mut Vec<u16>) -> Option<AppIdentity> {
+fn process_identity(pid: u32, image: &mut Vec<u16>) -> Option<(AppIdentity, Option<PathBuf>)> {
     // Only query process metadata and close each handle before leaving the snapshot.
     unsafe {
         let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
@@ -108,35 +111,38 @@ fn process_identity(pid: u32, image: &mut Vec<u16>) -> Option<AppIdentity> {
         }
         let mut app_id = [0_u16; 512];
         let mut length = app_id.len() as u32;
-        let result = if GetApplicationUserModelId(process, &mut length, app_id.as_mut_ptr()) == 0
-            && length > 1
-        {
-            Some(AppIdentity::Packaged(
-                String::from_utf16_lossy(&app_id[..length as usize - 1]).to_lowercase(),
-            ))
-        } else {
-            let mut length = image.len() as u32;
-            let mut read = QueryFullProcessImageNameW(process, 0, image.as_mut_ptr(), &mut length);
-            if read == 0 && GetLastError() == ERROR_INSUFFICIENT_BUFFER && image.len() < 32768 {
-                image.resize(32768, 0);
-                length = image.len() as u32;
-                read = QueryFullProcessImageNameW(process, 0, image.as_mut_ptr(), &mut length);
-            }
-            if read != 0 && length != 0 {
-                let image = String::from_utf16_lossy(&image[..length as usize]).to_lowercase();
-                let name = image.rsplit('\\').next();
-                // The legacy packaged-app frame process can host unrelated applications.
-                if matches!(name, Some("applicationframehost.exe" | "wwahost.exe")) {
-                    None
-                } else {
-                    Some(AppIdentity::Executable(image))
-                }
-            } else {
-                None
-            }
-        };
+        let packaged = (GetApplicationUserModelId(process, &mut length, app_id.as_mut_ptr()) == 0
+            && length > 1)
+            .then(|| {
+                AppIdentity::Packaged(
+                    String::from_utf16_lossy(&app_id[..length as usize - 1]).to_lowercase(),
+                )
+            });
+        let mut length = image.len() as u32;
+        let mut read = QueryFullProcessImageNameW(process, 0, image.as_mut_ptr(), &mut length);
+        if read == 0 && GetLastError() == ERROR_INSUFFICIENT_BUFFER && image.len() < 32768 {
+            image.resize(32768, 0);
+            length = image.len() as u32;
+            read = QueryFullProcessImageNameW(process, 0, image.as_mut_ptr(), &mut length);
+        }
         CloseHandle(process);
-        result
+        let image =
+            (read != 0 && length != 0).then(|| String::from_utf16_lossy(&image[..length as usize]));
+        if let Some(packaged) = packaged {
+            return Some((packaged, image.map(PathBuf::from)));
+        }
+        let image = image?;
+        let identity = image.to_lowercase();
+        let name = identity.rsplit('\\').next();
+        // The legacy packaged-app frame process can host unrelated applications.
+        if matches!(name, Some("applicationframehost.exe" | "wwahost.exe")) {
+            None
+        } else {
+            Some((
+                AppIdentity::Executable(identity),
+                Some(PathBuf::from(image)),
+            ))
+        }
     }
 }
 

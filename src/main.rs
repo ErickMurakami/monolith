@@ -11,6 +11,8 @@ mod dock;
 #[cfg(windows)]
 mod hotkey;
 #[cfg(windows)]
+mod icons;
+#[cfg(windows)]
 mod overlay;
 #[cfg(windows)]
 mod preview;

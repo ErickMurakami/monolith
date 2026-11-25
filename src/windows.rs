@@ -185,6 +185,7 @@ pub fn run() -> io::Result<()> {
                 order_path,
                 monitor: settings.dock_monitor,
                 auto_hide: settings.dock_auto_hide,
+                original_icons: settings.dock_original_icons,
             }),
             show_top_bar,
         );

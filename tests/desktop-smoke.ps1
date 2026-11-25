@@ -212,6 +212,33 @@ function Save-SurfaceCapture($Window, [string]$Path, [int]$Inset = 2, [int]$Righ
     }
 }
 
+function Test-MonochromeGlyph($Window) {
+    Add-Type -AssemblyName System.Drawing
+    $area = [DesktopSmoke]::Bounds($Window)
+    $side = [Math]::Min(24, $area[3]-$area[1]-4)
+    $image = [Drawing.Bitmap]::new($side, $side)
+    $graphics = [Drawing.Graphics]::FromImage($image)
+    try {
+        $graphics.CopyFromScreen(
+            [int](($area[0]+$area[2]-$side)/2),
+            [int](($area[1]+$area[3]-$side)/2), 0, 0, $image.Size
+        )
+        $ink = 0
+        for ($y = 0; $y -lt $side; $y++) {
+            for ($x = 0; $x -lt $side; $x++) {
+                $pixel = $image.GetPixel($x, $y)
+                if ($pixel.R -ge 65 -and $pixel.R -eq $pixel.G -and $pixel.G -eq $pixel.B) {
+                    $ink++
+                }
+            }
+        }
+        return $ink -ge 25
+    } finally {
+        $graphics.Dispose()
+        $image.Dispose()
+    }
+}
+
 function Focus-Fixture($Form) {
     [void][DesktopSmoke]::SetForegroundWindow($Form.Handle)
     if ([DesktopSmoke]::GetForegroundWindow() -ne $Form.Handle) {
@@ -577,6 +604,20 @@ function Invoke-PinSmoke($Application) {
         if ([DesktopSmoke]::Left($first) -ge [DesktopSmoke]::Left($second)) { throw 'Dock pins are out of order.' }
         if ([DesktopSmoke]::FindWindowEx($dockWindow, $first, 'Button', 'Verification Z') -ne [IntPtr]::Zero) {
             throw 'A repeated pin was rendered twice.'
+        }
+        Wait-Until { Test-MonochromeGlyph $first } 'The pinned shortcut did not render its monochrome Shell icon.'
+        if ($Capture) { Save-SurfaceCapture $first $Capture }
+        $cursor = [Windows.Forms.Cursor]::Position
+        $tileBounds = [DesktopSmoke]::Bounds($first)
+        try {
+            [Windows.Forms.Cursor]::Position = [Drawing.Point]::new(
+                [int](($tileBounds[0]+$tileBounds[2])/2), [int](($tileBounds[1]+$tileBounds[3])/2)
+            )
+            Wait-Until {
+                [DesktopSmoke]::FindVisibleForProcess('tooltips_class32', [uint32]$launcher.Id) -ne [IntPtr]::Zero
+            } 'The icon did not display its native tooltip.'
+        } finally {
+            [Windows.Forms.Cursor]::Position = $cursor
         }
         if (![DesktopSmoke]::Drag($first, $second)) { throw 'Could not drag the pins.' }
         $orderPath = Join-Path $config 'dock-order.toml'

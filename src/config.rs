@@ -16,6 +16,7 @@ pub struct Config {
     pub dock_pins: Vec<String>,
     pub dock_monitor: DockMonitor,
     pub dock_auto_hide: bool,
+    pub dock_original_icons: bool,
     pub top_bar: bool,
 }
 

@@ -3,6 +3,7 @@
 use crate::{
     config::{self, DockMonitor},
     desktop::{self, WindowGroup},
+    icons,
     overlay::{self, Palette},
     preview::{self, Preview},
     search::App,
@@ -48,6 +49,7 @@ pub struct Settings {
     pub order_path: PathBuf,
     pub monitor: DockMonitor,
     pub auto_hide: bool,
+    pub original_icons: bool,
 }
 
 struct PinDrag {
@@ -74,6 +76,9 @@ struct State {
     expanded: bool,
     menu_open: bool,
     preview: Option<(HWND, Preview)>,
+    icons: Option<icons::Cache>,
+    original_icons: bool,
+    tooltip: HWND,
     palette: Palette,
     portuguese: bool,
 }
@@ -82,6 +87,25 @@ impl State {
     fn live_group(&self, id: u32) -> Option<&WindowGroup> {
         let tile = id.checked_sub(FIRST_WINDOW)? as usize;
         self.groups.get(tile.checked_sub(self.visible_pins)?)
+    }
+
+    fn icon_path(&self, id: u32) -> Option<&std::path::Path> {
+        if let Some(index) = pin_index(id, self.visible_pins) {
+            return Some(self.pins.get(index)?.path.as_path());
+        }
+        self.live_group(id)?.icon_path.as_deref()
+    }
+
+    fn request_icons(&mut self) {
+        if self.icons.is_none() {
+            return;
+        }
+        let visible = (FIRST_WINDOW..FIRST_WINDOW + CAPACITY as u32)
+            .filter_map(|id| self.icon_path(id).map(std::path::Path::to_path_buf))
+            .collect::<Vec<_>>();
+        if let Some(cache) = self.icons.as_mut() {
+            cache.request(&visible);
+        }
     }
 }
 
@@ -144,6 +168,9 @@ impl Dock {
                     expanded: !settings.auto_hide,
                     menu_open: false,
                     preview: None,
+                    icons: icons::Cache::new(handle).ok(),
+                    original_icons: settings.original_icons,
+                    tooltip: null_mut(),
                     palette,
                     portuguese,
                 }),
@@ -182,6 +209,7 @@ impl Dock {
                 }
                 (*state).buttons.push(button);
             }
+            (*state).tooltip = tooltips(handle, instance, &(*state).buttons);
             EVENT_TARGET.set(handle);
             for (first, last, flags) in [
                 (EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND, 0),
@@ -218,6 +246,51 @@ impl Dock {
             refresh(handle, state);
             Ok(dock)
         }
+    }
+}
+
+unsafe fn tooltips(hwnd: HWND, instance: *mut c_void, buttons: &[HWND]) -> HWND {
+    unsafe {
+        let controls = INITCOMMONCONTROLSEX {
+            dwSize: size_of::<INITCOMMONCONTROLSEX>() as u32,
+            dwICC: ICC_WIN95_CLASSES,
+        };
+        if InitCommonControlsEx(&controls) == 0 {
+            return null_mut();
+        }
+        let tooltip = CreateWindowExW(
+            WS_EX_TOPMOST,
+            TOOLTIPS_CLASSW,
+            std::ptr::null(),
+            WS_POPUP | TTS_NOPREFIX | TTS_ALWAYSTIP,
+            0,
+            0,
+            0,
+            0,
+            hwnd,
+            null_mut(),
+            instance,
+            null_mut(),
+        );
+        if tooltip.is_null() {
+            return tooltip;
+        }
+        SendMessageW(tooltip, CCM_SETUNICODEFORMAT, 1, 0);
+        for &button in buttons.iter().skip(2) {
+            let tool = TTTOOLINFOW {
+                // The bundled legacy common-controls implementation accepts V2.
+                cbSize: std::mem::offset_of!(TTTOOLINFOW, lpReserved) as u32,
+                uFlags: TTF_IDISHWND | TTF_SUBCLASS | TTF_TRANSPARENT,
+                hwnd,
+                uId: button as usize,
+                lpszText: (-1_isize) as *mut u16, // LPSTR_TEXTCALLBACKW
+                ..Default::default()
+            };
+            SendMessageW(tooltip, TTM_ADDTOOLW, 0, (&raw const tool) as isize);
+        }
+        SendMessageW(tooltip, TTM_ACTIVATE, 1, 0);
+        SendMessageW(tooltip, TTM_SETDELAYTIME, TTDT_INITIAL as usize, 600);
+        tooltip
     }
 }
 
@@ -407,6 +480,10 @@ impl Drop for Dock {
                 UnhookWinEvent(hook);
             }
             drop(self.state.preview.take());
+            drop(self.state.icons.take());
+            if !self.state.tooltip.is_null() {
+                DestroyWindow(self.state.tooltip);
+            }
             DestroyWindow(self.handle);
             DeleteObject(self.state.brush);
             DeleteObject(self.state.font);
@@ -552,7 +629,7 @@ unsafe fn refresh(hwnd: HWND, state: *mut State) {
 
         let work = display.rcWork;
         let inset = scale(5);
-        let step = scale(116).min(((work.right - work.left - 2 * inset) / 2).max(1));
+        let step = scale(76).min(((work.right - work.left - 2 * inset) / 2).max(1));
         let capacity =
             (((work.right - work.left - 2 * inset) / step) - 2).clamp(0, CAPACITY as i32) as usize;
         let mut groups = desktop::snapshot()
@@ -562,6 +639,7 @@ unsafe fn refresh(hwnd: HWND, state: *mut State) {
         (*state).visible_pins = pin_count;
         groups.truncate(capacity - pin_count);
         (*state).groups = groups;
+        (&mut *state).request_icons();
         let button_count = pin_count + (*state).groups.len() + 2;
         let width = button_count as i32 * step + 2 * inset;
         let height = scale(37);
@@ -628,14 +706,12 @@ unsafe fn draw(state: *mut State, item: &DRAWITEMSTRUCT) {
         if saved == 0 {
             return;
         }
-        SetDCBrushColor(
-            item.hDC,
-            if pressed {
-                palette.pressed
-            } else {
-                palette.surface
-            },
-        );
+        let fill = if pressed {
+            palette.pressed
+        } else {
+            palette.surface
+        };
+        SetDCBrushColor(item.hDC, fill);
         let brush = GetStockObject(DC_BRUSH) as HBRUSH;
         FillRect(item.hDC, &area, brush);
 
@@ -645,20 +721,28 @@ unsafe fn draw(state: *mut State, item: &DRAWITEMSTRUCT) {
         }
         SetBkMode(item.hDC, TRANSPARENT as i32);
         SetTextColor(item.hDC, palette.text);
-        let mut title = [0_u16; 513];
-        let length = GetWindowTextW(item.hwndItem, title.as_mut_ptr(), title.len() as i32);
-        let mut text_area = RECT {
-            left: area.left + 5,
-            right: area.right - 5,
-            ..area
-        };
-        DrawTextW(
-            item.hDC,
-            title.as_mut_ptr(),
-            length,
-            &mut text_area,
-            DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX,
-        );
+        let icon_drawn = (&*state).icon_path(item.CtlID).is_some_and(|path| {
+            (*state).icons.as_ref().is_some_and(|cache| {
+                let size = overlay::scale(21, (*state).dpi).min(area.bottom - area.top - 4);
+                cache.draw(path, item.hDC, area, size, fill, (*state).original_icons)
+            })
+        });
+        if !icon_drawn {
+            let mut title = [0_u16; 513];
+            let length = GetWindowTextW(item.hwndItem, title.as_mut_ptr(), title.len() as i32);
+            let mut text_area = RECT {
+                left: area.left + 5,
+                right: area.right - 5,
+                ..area
+            };
+            DrawTextW(
+                item.hDC,
+                title.as_mut_ptr(),
+                length,
+                &mut text_area,
+                DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX,
+            );
+        }
         let groups = &(*state).groups;
         let drop_target = pin_index(item.CtlID, (*state).visible_pins)
             .is_some_and(|index| (*state).drag.as_ref().and_then(|drag| drag.over) == Some(index));
@@ -729,6 +813,26 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
             WM_DRAWITEM if lp != 0 => {
                 draw(state, &*(lp as *const DRAWITEMSTRUCT));
                 1
+            }
+            WM_NOTIFY if lp != 0 => {
+                let header = &*(lp as *const NMHDR);
+                if header.hwndFrom == (*state).tooltip && header.code == TTN_GETDISPINFOW {
+                    let tip = &mut *(lp as *mut NMTTDISPINFOW);
+                    GetWindowTextW(
+                        tip.hdr.idFrom as HWND,
+                        tip.szText.as_mut_ptr(),
+                        tip.szText.len() as i32,
+                    );
+                    tip.lpszText = tip.szText.as_mut_ptr();
+                }
+                0
+            }
+            icons::READY => {
+                if (*state).icons.as_mut().is_some_and(icons::Cache::receive) {
+                    (&mut *state).request_icons();
+                    repaint_buttons(state);
+                }
+                0
             }
             WM_ERASEBKGND => {
                 let mut area = RECT::default();

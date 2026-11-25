@@ -9,6 +9,7 @@ The Windows executable is a single Rust package. Modules separate desktop integr
 - `top_bar` owns a separate status window on the same GUI thread. Native time and power notifications refresh the clock and battery data. A one-shot timer aligns clock changes to minute boundaries and stops when fullscreen hides the bar.
 - `hotkey` owns the native shortcut registration. Win+Space stays preferred. When Windows returns `ERROR_HOTKEY_ALREADY_REGISTERED`, the process attempts Ctrl+Alt+Space and retains the original system chord.
 - `preview` links an on-demand, borderless Dock preview to a source window through DWM. Pointer departure, a tile click or an inventory update releases the thumbnail relationship. The preview has no capture loop and leaves foreground focus with the source application.
+- `icons` loads Shell icons on a dedicated COM worker. A bounded queue limits requests to visible pins and application groups. The cache keeps raster data rather than native icon handles and converts to monochrome at paint time. Native button names and tooltips remain available.
 - `windows` owns the GUI thread, HWND lifetime, GDI resources and global shortcut. Explicit activation opens the selected shortcut through the Windows shell. Native messages drive painting, focus, layout and input.
 
 The launcher is the first vertical slice. The application exits by default and has an explicit resident mode. No installer, service, login entry or Explorer integration is present in this checkpoint.
@@ -20,7 +21,7 @@ The launcher is the first vertical slice. The application exits by default and h
 ## Next product milestones
 
 1. Extend validation of window enumeration to packaged apps and multiple display scales.
-2. Extend the opt-in Dock with native icons, previews and placement. Add the next Top Bar modules. Validate Explorer compatibility and recovery before adding taskbar visibility controls.
+2. Extend the opt-in Dock with simultaneous per-display placement. Add the next Top Bar modules. Validate Explorer compatibility and recovery before adding taskbar visibility controls.
 3. Add media sessions and workspace navigation through documented Windows APIs. Retain Task View for unsupported workspace operations.
 4. Add Files, preview and an index. Validate file operation cancellation and recovery before writing through the UI.
 5. Measure each workload before adding optimisations, settings and packaging.

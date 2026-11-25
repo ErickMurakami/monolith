@@ -14,17 +14,18 @@ Foundation and the first native application are implemented. Desktop Experience 
 - `src/config.rs` validates TOML, preserves invalid files and supports a safe start.
 - `src/top_bar.rs` displays native clock and battery data in an opt-in borderless overlay.
 - `src/preview.rs` owns the on-demand DWM thumbnail shown when hovering a running Dock tile.
+- `src/icons.rs` extracts authentic Shell icons on a bounded worker and renders monochrome or original colours.
 - `benchmarks/measure.ps1` samples Windows and Monolith memory, CPU and I/O.
 - The benchmark also records the busiest GPU engine from WDDM counters when available.
 - `docs/spotlight.png` shows a calculation in the running borderless Spotlight release build.
-- `docs/dock.png` is a cropped capture of the running Dock with a verification window selected.
+- `docs/dock.png` is a cropped capture of a monochrome icon in the running Dock.
 - `docs/top-bar.png` is a cropped live capture of the Top Bar status area.
 
-The Dock groups running windows by packaged application ID or verified process image, opens a native window chooser and previews the active or first visible window in a group. It can follow the active display and retract to an optional pointer reveal strip. Dock icons and simultaneous per-display Docks are pending. Workspaces and connectivity modules for the Top Bar, the media Island, Files, indexing, tuning, settings UI, Android integration and installers are pending.
+The Dock groups running windows by packaged application ID or verified process image, opens a native window chooser and previews the active or first visible window in a group. It can follow the active display, retract to a pointer reveal strip and show native Shell icons for pins and running groups. Simultaneous per-display Docks are pending. Workspaces and connectivity modules for the Top Bar, the media Island, Files, indexing, tuning, settings UI, Android integration and installers are pending.
 
 ## Validation
 
-Validated on native Windows 11 26H2. Cargo formatting, Clippy with warnings denied, fifteen unit tests and the locked release build passed. A live desktop run verified shortcut launch, safe-mode exit and calculator output. `tests/desktop-smoke.ps1` verified filtering out hidden and owned windows, identifying fullscreen and minimised windows, refreshing after a window closes and switching to a minimised window. The same script with `-Dock` verified mouse clicks, minimisation, restoration, title changes, grouped menu selection, fullscreen suppression and recovery, Spotlight opening, clean exit and safe-mode suppression. The script with `-Pins` verified configured ordering, drag persistence after restart, deduplication and launching a real shortcut. An additional live check found packaged Notepad by the title of a temporary test document. The `-Spotlight` test verified the borderless styles, placement, calculation, Escape and focus-loss dismissal. The `-TopBar` test verified the clock, non-activating styles, fullscreen hiding, Spotlight and Exit. The `-AutoHide` test verified active-display placement, pointer reveal and pointer retraction on one attached monitor. The `-Preview` test verified actual DWM thumbnail pixels, focus preservation and cleanup on pointer departure. Live Spotlight, Dock and Top Bar captures were visually reviewed. Cross-build, high contrast and mixed-DPI testing remain pending.
+Validated on native Windows 11 26H2. Cargo formatting, Clippy with warnings denied, sixteen unit tests and the locked release build passed. A live desktop run verified shortcut launch, safe-mode exit and calculator output. `tests/desktop-smoke.ps1` verified filtering out hidden and owned windows, identifying fullscreen and minimised windows, refreshing after a window closes and switching to a minimised window. The same script with `-Dock` verified mouse clicks, minimisation, restoration, title changes, grouped menu selection, fullscreen suppression and recovery, Spotlight opening, clean exit and safe-mode suppression. The script with `-Pins` verified configured ordering, drag persistence after restart, deduplication, launching a real shortcut, rendered monochrome icon pixels and a native tooltip. An additional live check found packaged Notepad by the title of a temporary test document. The `-Spotlight` test verified the borderless styles, placement, calculation, Escape and focus-loss dismissal. The `-TopBar` test verified the clock, non-activating styles, fullscreen hiding, Spotlight and Exit. The `-AutoHide` test verified active-display placement, pointer reveal and pointer retraction on one attached monitor. The `-Preview` test verified actual DWM thumbnail pixels, focus preservation and cleanup on pointer departure. Live Spotlight, Dock and Top Bar captures were visually reviewed. Cross-build, high contrast and mixed-DPI testing remain pending.
 
 Checked the declared licences of all locked dependencies. OSV returned zero advisory matches for 19 registry package versions. Cargo Audit also passed against the RustSec database with warnings denied.
 
@@ -36,6 +37,8 @@ The Dock was sampled in two baseline/Dock pairs with six samples per scenario at
 
 After the borderless Spotlight and pin-reordering changes, two matched idle runs provided twelve samples per scenario. The Dock alone used 1.11-1.13 MiB of private working set, 9.90-9.93 MiB of total working set and 1.60-1.74 MiB of private bytes. Standalone Spotlight used 1.37-1.41 MiB, 13.33-13.36 MiB and 1.88-1.91 MiB respectively. Monolith CPU, GPU and I/O counters read zero at sample resolution. System busiest-engine GPU ranges were 1-6% at baseline, 2-4% with the Dock and 1-3% with Spotlight. System CPU ranges overlapped across the scenarios.
 
+After adding Shell icons, twelve idle Dock samples across two runs measured 2.05-2.11 MiB of private working set, 19.36-19.41 MiB of total working set and 4.37-4.43 MiB of private bytes. The worker had loaded visible tiles and no preview was open. App CPU, GPU and I/O counters read zero at sample resolution. System busiest-engine GPU ranged from 1% to 15% at baseline and 1% to 4% during Dock sampling. The system values are workload observations.
+
 ## Git and recovery
 
 The launcher, benchmark, calculator and window-switcher checkpoints are `e86dc9a`, `5f279bb`, `9b9b555` and `a8cef7b`. The project uses `main` and an SSH remote under the verified personal account. Workstation-specific records, configuration and raw benchmark exports stay local.
@@ -44,8 +47,8 @@ The binary needs no elevation and makes no persistent changes to Windows. Dismis
 
 ## Shortcut compatibility
 
-The current Windows build returned Win32 error 1409 on a direct Win+Space registration probe and accepted Ctrl+Alt+Space. An experimental low-level capture showed Spotlight but could not reliably give the search field foreground focus. The published runtime uses `RegisterHotKey` and leaves the reserved chord to Windows. A native desktop test with `-Hotkey` verifies the fallback, suppression of key repeats, typing without a click, repeat-to-dismiss and restoration of focus.
+The current Windows build returned Win32 error 1409 on a direct Win+Space registration probe and accepted Ctrl+Alt+Space. An experimental low-level capture showed Spotlight but could not reliably give the search field foreground focus. The published runtime uses `RegisterHotKey` and leaves the reserved chord to Windows. A native desktop test with `-Hotkey` verifies the temporary fallback, suppression of key repeats, typing without a click, repeat-to-dismiss and restoration of focus. Live checks passed with the desktop shell, File Explorer, Helium, VS Code and IntelliJ IDEA.
 
 ## Next task
 
-Extract and cache native monochrome Dock icons and develop the media Island. Win+Space remains the target shortcut. Keep the experimental capture out of the public runtime until foreground activation and immediate typing are stable.
+Develop the Dynamic Island using Windows media-session events and real transport controls. Win+Space remains the target shortcut. Keep the experimental capture out of the public runtime until foreground activation and immediate typing are stable.
