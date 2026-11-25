@@ -15,6 +15,8 @@ mod desktop;
 #[cfg(windows)]
 mod dock;
 #[cfg(windows)]
+mod file_changes;
+#[cfg(windows)]
 mod files;
 #[cfg(windows)]
 mod files_directory;

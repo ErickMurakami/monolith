@@ -1,6 +1,7 @@
 //! Native Files window. The list owns selection and requests visible rows from the directory model.
 
 use crate::{
+    file_changes::{self, Change, Outcome},
     files_directory::{self, Listing, Move, Navigation, Reader},
     overlay::{self, Palette},
     quick_look::{self, QuickLook},
@@ -13,7 +14,7 @@ use std::{
     os::windows::ffi::{OsStrExt, OsStringExt},
     path::{Path, PathBuf},
     ptr::null_mut,
-    sync::{Arc, atomic::AtomicBool},
+    sync::{Arc, atomic::AtomicBool, mpsc::Receiver},
 };
 use windows_sys::{
     Win32::{
@@ -48,6 +49,9 @@ const PATH: usize = 8;
 const LIST: usize = 9;
 const STATUS: usize = 10;
 const HIDDEN: usize = 11;
+const NAME_EDIT: usize = 12;
+const APPLY_NAME: usize = 13;
+const CANCEL_NAME: usize = 14;
 const FIRST_FAVOURITE: usize = 20;
 const FOLDERS: [(GUID, &str, &str); 4] = [
     (FOLDERID_Profile, "Home", "Início"),
@@ -60,8 +64,11 @@ struct State {
     reader: Option<Reader>,
     preview: Option<QuickLook>,
     preview_busy: Arc<AtomicBool>,
+    name_edit: Option<(PathBuf, Change)>,
+    change: Option<Receiver<Outcome>>,
     navigation: Navigation,
     listing: Listing,
+    listing_generation: u64,
     requested: Option<(PathBuf, Move)>,
     favourites: [Option<PathBuf>; FOLDERS.len()],
     hidden: bool,
@@ -168,9 +175,12 @@ pub fn run(initial: Option<PathBuf>, palette: Palette, portuguese: bool) -> io::
             reader: None,
             preview: None,
             preview_busy: Arc::default(),
+            name_edit: None,
+            change: None,
             navigation: Navigation::default(),
             requested: None,
             listing: Listing::default(),
+            listing_generation: 0,
             favourites: FOLDERS.map(|(id, _, _)| known_folder(&id)),
             hidden: false,
             portuguese,
@@ -309,6 +319,18 @@ unsafe fn initialise(
             );
         }
         button((*state).label("Show hidden", "Mostrar ocultos"), HIDDEN)?;
+        let name = child(
+            wide("EDIT").as_ptr(),
+            "",
+            WS_TABSTOP | ES_AUTOHSCROLL as u32,
+            NAME_EDIT,
+        )?;
+        SendMessageW(name, EM_LIMITTEXT, 255, 0);
+        let apply = button((*state).label("Apply", "Aplicar"), APPLY_NAME)?;
+        let cancel = button((*state).label("Cancel", "Cancelar"), CANCEL_NAME)?;
+        for item in [name, apply, cancel] {
+            ShowWindow(item, SW_HIDE);
+        }
         child(static_class.as_ptr(), "", SS_CENTERIMAGE, STATUS)?;
         (*state).reader = Some(Reader::start(hwnd)?);
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, state as isize);
@@ -373,6 +395,16 @@ unsafe fn key(hwnd: HWND, state: *mut State, message: &MSG) -> bool {
         }
         let ctrl = GetKeyState(i32::from(VK_CONTROL)) < 0;
         match vk {
+            VK_ESCAPE if (*state).name_edit.is_some() && (*state).change.is_none() => {
+                end_name_edit(hwnd, state)
+            }
+            VK_RETURN if message.hwnd == GetDlgItem(hwnd, NAME_EDIT as i32) => {
+                submit_name(hwnd, state)
+            }
+            VK_F2 if message.hwnd == list => begin_name_edit(hwnd, state, Some(focused_row(list))),
+            VK_N if ctrl && GetKeyState(i32::from(VK_SHIFT)) < 0 => {
+                begin_name_edit(hwnd, state, None)
+            }
             VK_L if ctrl => {
                 SetFocus(edit);
                 SendMessageW(edit, EM_SETSEL, 0, -1);
@@ -451,7 +483,9 @@ unsafe fn layout(hwnd: HWND, state: *mut State) {
                 wide("Segoe UI").as_ptr(),
             );
             if !font.is_null() {
-                for id in (TITLE..=HIDDEN).chain(FIRST_FAVOURITE..FIRST_FAVOURITE + FOLDERS.len()) {
+                for id in
+                    (TITLE..=CANCEL_NAME).chain(FIRST_FAVOURITE..FIRST_FAVOURITE + FOLDERS.len())
+                {
                     SendMessageW(GetDlgItem(hwnd, id as i32), WM_SETFONT, font as usize, 0);
                 }
                 DeleteObject((*state).font);
@@ -527,7 +561,12 @@ unsafe fn layout(hwnd: HWND, state: *mut State) {
             left,
             scale(74),
             list_width,
-            height - scale(108),
+            height
+                - scale(if (*state).name_edit.is_some() {
+                    144
+                } else {
+                    108
+                }),
         );
         let list = GetDlgItem(hwnd, LIST as i32);
         let kind = scale(85);
@@ -545,6 +584,27 @@ unsafe fn layout(hwnd: HWND, state: *mut State) {
             list_width,
             scale(22),
         );
+        place(
+            NAME_EDIT as i32,
+            left,
+            height - scale(63),
+            list_width - scale(161),
+            scale(25),
+        );
+        place(
+            APPLY_NAME as i32,
+            width - pad - scale(153),
+            height - scale(64),
+            scale(72),
+            scale(26),
+        );
+        place(
+            CANCEL_NAME as i32,
+            width - pad - scale(76),
+            height - scale(64),
+            scale(76),
+            scale(26),
+        );
         InvalidateRect(hwnd, std::ptr::null(), 1);
     }
 }
@@ -557,6 +617,9 @@ unsafe fn set_text(hwnd: HWND, id: usize, text: &str) {
 
 unsafe fn request(hwnd: HWND, state: *mut State, path: PathBuf, movement: Move) {
     unsafe {
+        if (*state).name_edit.is_some() && (*state).change.is_none() {
+            end_name_edit(hwnd, state);
+        }
         if let Some(reader) = &(*state).reader {
             SetWindowTextW(
                 GetDlgItem(hwnd, PATH as i32),
@@ -613,20 +676,12 @@ unsafe fn complete(hwnd: HWND, state: *mut State) {
                 SendMessageW(list, LVM_DELETEALLITEMS, 0, 0);
                 (*state).navigation.commit(result.path, result.movement);
                 let count = listing.entries.len();
-                let status = if listing.incomplete {
-                    format!(
-                        "{count} {}",
-                        (*state).label(
-                            "items shown · listing incomplete",
-                            "itens exibidos · lista incompleta"
-                        )
-                    )
-                } else {
-                    format!("{count} {}", (*state).label("items", "itens"))
-                };
                 (*state).listing = listing;
+                (*state).listing_generation += 1;
                 SendMessageW(list, LVM_SETITEMCOUNT, count, 0);
-                set_text(hwnd, STATUS, &status);
+                if (*state).change.is_none() {
+                    listing_status(hwnd, state);
+                }
             }
             Err(error) => show_error(hwnd, state, &error),
         }
@@ -717,6 +772,8 @@ unsafe fn preview(hwnd: HWND, state: *mut State, row: i32) {
 unsafe fn action(hwnd: HWND, state: *mut State, id: usize) {
     unsafe {
         match id {
+            APPLY_NAME => submit_name(hwnd, state),
+            CANCEL_NAME if (*state).change.is_none() => end_name_edit(hwnd, state),
             MINIMISE => {
                 ShowWindow(hwnd, SW_MINIMIZE);
             }
@@ -769,6 +826,228 @@ unsafe fn action(hwnd: HWND, state: *mut State, id: usize) {
     }
 }
 
+fn focused_row(list: HWND) -> i32 {
+    unsafe { SendMessageW(list, LVM_GETNEXTITEM, usize::MAX, LVNI_FOCUSED as isize) as i32 }
+}
+
+unsafe fn name_controls(hwnd: HWND, visible: bool, enabled: bool) {
+    unsafe {
+        for id in [NAME_EDIT, APPLY_NAME, CANCEL_NAME] {
+            let item = GetDlgItem(hwnd, id as i32);
+            EnableWindow(item, i32::from(enabled));
+            ShowWindow(item, if visible { SW_SHOWNA } else { SW_HIDE });
+        }
+    }
+}
+
+unsafe fn begin_name_edit(hwnd: HWND, state: *mut State, row: Option<i32>) {
+    unsafe {
+        if (*state).requested.is_some() || (*state).change.is_some() {
+            return;
+        }
+        let Some(directory) = (*state).navigation.current().map(Path::to_path_buf) else {
+            return;
+        };
+        let (change, initial, title, selection) = if let Some(row) = row {
+            let entries = &(*state).listing.entries;
+            let Some(entry) = entries.get(row as usize) else {
+                return;
+            };
+            let length = if entry.directory {
+                -1
+            } else {
+                Path::new(&entry.name)
+                    .file_stem()
+                    .map_or(-1, |stem| stem.encode_wide().count() as isize)
+            };
+            (
+                Change::Rename(entry.name.clone()),
+                entry.name.clone(),
+                (*state).label("Rename item", "Renomear item"),
+                length,
+            )
+        } else {
+            let title = (*state).label("New folder", "Nova pasta");
+            (Change::CreateDirectory, OsString::from(title), title, -1)
+        };
+        let edit = GetDlgItem(hwnd, NAME_EDIT as i32);
+        (*state).name_edit = Some((directory, change));
+        SetWindowTextW(edit, wide_path(&initial).as_ptr());
+        set_text(hwnd, STATUS, title);
+        layout(hwnd, state);
+        name_controls(hwnd, true, true);
+        SetFocus(edit);
+        SendMessageW(edit, EM_SETSEL, 0, selection);
+    }
+}
+
+unsafe fn end_name_edit(hwnd: HWND, state: *mut State) {
+    unsafe {
+        (*state).name_edit = None;
+        name_controls(hwnd, false, true);
+        layout(hwnd, state);
+        listing_status(hwnd, state);
+        if GetForegroundWindow() == hwnd {
+            SetFocus(GetDlgItem(hwnd, LIST as i32));
+        }
+    }
+}
+
+unsafe fn listing_status(hwnd: HWND, state: *mut State) {
+    unsafe {
+        let count = (*state).listing.entries.len();
+        let label = if (*state).listing.incomplete {
+            (*state).label(
+                "items shown · listing incomplete",
+                "itens exibidos · lista incompleta",
+            )
+        } else {
+            (*state).label("items", "itens")
+        };
+        set_text(hwnd, STATUS, &format!("{count} {label}"));
+    }
+}
+
+unsafe fn submit_name(hwnd: HWND, state: *mut State) {
+    unsafe {
+        if (*state).change.is_some() {
+            return;
+        }
+        let Some((directory, change)) = (*state).name_edit.clone() else {
+            return;
+        };
+        let edit = GetDlgItem(hwnd, NAME_EDIT as i32);
+        let capacity = GetWindowTextLengthW(edit) + 1;
+        let mut input = vec![0; capacity as usize];
+        let count = GetWindowTextW(edit, input.as_mut_ptr(), capacity);
+        input.truncate(count as usize);
+        match file_changes::start(hwnd, directory, change, input) {
+            Ok(receive) => {
+                (*state).change = Some(receive);
+                name_controls(hwnd, true, false);
+                set_text(
+                    hwnd,
+                    STATUS,
+                    (*state).label("Applying change…", "Aplicando alteração…"),
+                );
+            }
+            Err(error) if error.kind() == io::ErrorKind::InvalidInput => set_text(
+                hwnd,
+                STATUS,
+                (*state).label(
+                    "Enter a valid Windows filename",
+                    "Digite um nome de arquivo válido no Windows",
+                ),
+            ),
+            Err(error) => set_text(
+                hwnd,
+                STATUS,
+                &format!(
+                    "{} · {error}",
+                    (*state).label(
+                        "Could not start the operation",
+                        "Não foi possível iniciar a operação"
+                    )
+                ),
+            ),
+        }
+    }
+}
+
+unsafe fn finish_change(hwnd: HWND, state: *mut State) {
+    unsafe {
+        let Some(outcome) = (*state)
+            .change
+            .as_ref()
+            .and_then(|reply| reply.try_recv().ok())
+        else {
+            return;
+        };
+        (*state).change = None;
+        match outcome.result {
+            Ok(()) => {
+                end_name_edit(hwnd, state);
+                if (*state).navigation.current() == Some(&outcome.directory)
+                    && (*state).requested.is_none()
+                {
+                    refresh(hwnd, state);
+                }
+            }
+            Err(error) => {
+                let title = if error.kind() == io::ErrorKind::AlreadyExists {
+                    (*state).label("That name is already in use", "Esse nome já está em uso")
+                } else {
+                    (*state).label(
+                        "Could not change this item",
+                        "Não foi possível alterar este item",
+                    )
+                };
+                set_text(hwnd, STATUS, &format!("{title} · {error}"));
+                name_controls(hwnd, true, true);
+                if GetForegroundWindow() == hwnd {
+                    SetFocus(GetDlgItem(hwnd, NAME_EDIT as i32));
+                }
+            }
+        }
+    }
+}
+
+unsafe fn list_menu(hwnd: HWND, state: *mut State, origin: HWND, lp: LPARAM) {
+    unsafe {
+        let generation = (*state).listing_generation;
+        let mut point = POINT {
+            x: i32::from(lp as i16),
+            y: i32::from((lp >> 16) as i16),
+        };
+        let row = if lp == -1 {
+            let mut area = RECT::default();
+            GetWindowRect(origin, &mut area);
+            point.x = area.left + 8;
+            point.y = area.top + 8;
+            focused_row(origin)
+        } else {
+            let mut hit = LVHITTESTINFO {
+                pt: point,
+                ..Default::default()
+            };
+            ScreenToClient(origin, &mut hit.pt);
+            SendMessageW(origin, LVM_HITTEST, 0, &raw mut hit as isize) as i32
+        };
+        let menu = CreatePopupMenu();
+        if menu.is_null() {
+            return;
+        }
+        let item_state = if row < 0 { MF_GRAYED } else { MF_ENABLED };
+        for (id, label, flags) in [
+            (1, (*state).label("Open", "Abrir"), item_state),
+            (2, "Quick Look", item_state),
+            (3, (*state).label("Rename…", "Renomear…"), item_state),
+            (4, (*state).label("New folder…", "Nova pasta…"), MF_ENABLED),
+        ] {
+            AppendMenuW(menu, MF_STRING | flags, id, wide(label).as_ptr());
+        }
+        let selected = TrackPopupMenuEx(
+            menu,
+            TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON,
+            point.x,
+            point.y,
+            hwnd,
+            null_mut(),
+        );
+        DestroyMenu(menu);
+        if IsWindow(hwnd) == 0 || generation != (*state).listing_generation {
+            return;
+        }
+        match selected {
+            1 => activate(hwnd, state, row),
+            2 => preview(hwnd, state, row),
+            3 => begin_name_edit(hwnd, state, Some(row)),
+            4 => begin_name_edit(hwnd, state, None),
+            _ => {}
+        }
+    }
+}
+
 unsafe fn cell_text(state: *mut State, info: &mut NMLVDISPINFOW) {
     unsafe {
         let item = &mut info.item;
@@ -805,6 +1084,14 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
             return DefWindowProcW(hwnd, msg, wp, lp);
         }
         match msg {
+            file_changes::READY => {
+                finish_change(hwnd, state);
+                0
+            }
+            WM_CONTEXTMENU if wp as HWND == GetDlgItem(hwnd, LIST as i32) => {
+                list_menu(hwnd, state, wp as HWND, lp);
+                0
+            }
             quick_look::CLOSE => {
                 if (*state).preview.as_ref().is_some_and(|preview| {
                     preview.handle() == wp as HWND
