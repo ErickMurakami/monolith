@@ -55,6 +55,8 @@ After adding Shell icons, twelve idle Dock samples across two runs measured 2.05
 
 At `6fcb723`, two baseline and shell-idle pairs provided twelve samples per scenario. The Dock and Top Bar were visible, Spotlight was closed and the enabled Island had no active media presentation. The combined process used 2.33-2.36 MiB of private working set, 25.27-25.31 MiB of total working set and 5.03-5.07 MiB of private bytes. App CPU, busiest GPU engine and I/O counters read zero at sample resolution. System CPU ranged from 0% to 51% at baseline and 0% to 49% with the shell. System busiest-engine GPU ranged from 1% to 4% at baseline and 1% to 5% with the shell.
 
+At `c04bb81`, two matched idle pairs provided twelve samples per scenario with the Dock and Top Bar visible, the Island enabled with no active presentation and Spotlight, Mission Control and Control Center closed. Monolith used 2.38-2.41 MiB of private working set, 25.37-25.41 MiB of total working set and 5.09-5.13 MiB of private bytes. Its sampled CPU, busiest GPU engine and I/O counters read zero. System CPU ranged from 0% to 38% at baseline and 0% to 68% with the shell. System busiest-engine GPU ranged from 1% to 4% and 1% to 5%, respectively.
+
 ## Git and recovery
 
 The launcher, benchmark, calculator and window-switcher checkpoints are `e86dc9a`, `5f279bb`, `9b9b555` and `a8cef7b`. The project uses `main` and an SSH remote under the verified personal account. The Island media-session checkpoint `d8081a1` was fast-forwarded into `main`. Its merged development branch was removed locally. Workstation-specific records, configuration and raw benchmark exports stay local.
