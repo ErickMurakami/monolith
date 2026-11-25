@@ -110,7 +110,7 @@ try {
     Wait-Until { [DesktopSmoke]::IsIconic($window) } 'The custom minimise control did not minimise Files.'
     [void][DesktopSmoke]::Post($window, 0x0112, [UIntPtr]::new([uint32]0xF120), [IntPtr]::Zero)
     Wait-Until { ![DesktopSmoke]::IsIconic($window) } 'Files did not restore from the taskbar command.'
-    if (![DesktopSmoke]::Click([DesktopSmoke]::GetDlgItem($window, 4))) { throw 'Could not click the custom close control.' }
+    Wait-Until { [DesktopSmoke]::Click([DesktopSmoke]::GetDlgItem($window, 4)) } 'Could not click the custom close control.'
     Wait-Until { $launcher.HasExited } 'The custom close control did not close Files.'
 
     $previousIds = @(Get-Process monolith -ErrorAction SilentlyContinue | ForEach-Object Id)

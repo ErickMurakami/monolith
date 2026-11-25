@@ -6,11 +6,12 @@ use windows::{
         BitmapAlphaMode, BitmapDecoder, BitmapPixelFormat, BitmapTransform, ColorManagementMode,
         ExifOrientationMode,
     },
-    Storage::Streams::IRandomAccessStreamReference,
+    Storage::Streams::{IRandomAccessStream, IRandomAccessStreamReference},
+    core::{GUID, Interface},
 };
 use windows_sys::Win32::{Foundation::RECT, Graphics::Gdi::*};
 
-const MAX_STREAM: u64 = 16 * 1024 * 1024;
+pub const MAX_STREAM: u64 = 16 * 1024 * 1024;
 const MAX_PIXELS: u64 = 16 * 1024 * 1024;
 const SIDE: u32 = 64;
 
@@ -23,13 +24,31 @@ pub struct Artwork {
 
 impl Artwork {
     pub fn decode(reference: &IRandomAccessStreamReference) -> Option<Self> {
-        let stream = reference.OpenReadAsync().ok()?.join().ok()?;
+        let stream = reference.OpenReadAsync().ok()?.join().ok()?.cast().ok()?;
+        Self::decode_stream(&stream, SIDE, None)
+    }
+
+    pub fn decode_stream(
+        stream: &IRandomAccessStream,
+        max_side: u32,
+        codec: Option<GUID>,
+    ) -> Option<Self> {
         let size = stream.Size().ok()?;
         if size == 0 || size > MAX_STREAM {
             return None;
         }
-        let decoder = BitmapDecoder::CreateAsync(&stream).ok()?.join().ok()?;
-        let (width, height) = fit(decoder.PixelWidth().ok()?, decoder.PixelHeight().ok()?)?;
+        let decoder = match codec {
+            Some(codec) => BitmapDecoder::CreateWithIdAsync(codec, stream),
+            None => BitmapDecoder::CreateAsync(stream),
+        }
+        .ok()?
+        .join()
+        .ok()?;
+        let (width, height) = fit(
+            decoder.PixelWidth().ok()?,
+            decoder.PixelHeight().ok()?,
+            max_side,
+        )?;
         let transform = BitmapTransform::new().ok()?;
         transform.SetScaledWidth(width).ok()?;
         transform.SetScaledHeight(height).ok()?;
@@ -116,7 +135,7 @@ impl Artwork {
     }
 }
 
-fn fit(width: u32, height: u32) -> Option<(u32, u32)> {
+fn fit(width: u32, height: u32, max_side: u32) -> Option<(u32, u32)> {
     if width == 0
         || height == 0
         || width.max(height) > 8192
@@ -125,11 +144,11 @@ fn fit(width: u32, height: u32) -> Option<(u32, u32)> {
         return None;
     }
     let longest = width.max(height);
-    if longest <= SIDE {
+    if longest <= max_side {
         Some((width, height))
     } else {
         let scale = |dimension| {
-            ((u64::from(dimension) * u64::from(SIDE) / u64::from(longest)) as u32).max(1)
+            ((u64::from(dimension) * u64::from(max_side) / u64::from(longest)) as u32).max(1)
         };
         Some((scale(width), scale(height)))
     }
@@ -141,9 +160,10 @@ mod tests {
 
     #[test]
     fn limits_cover_dimensions_and_preserves_aspect_ratio() {
-        assert_eq!(fit(1200, 600), Some((64, 32)));
-        assert_eq!(fit(0, 1), None);
-        assert_eq!(fit(10000, 10000), None);
-        assert_eq!(fit(8, 16), Some((8, 16)));
+        assert_eq!(fit(1200, 600, SIDE), Some((64, 32)));
+        assert_eq!(fit(0, 1, SIDE), None);
+        assert_eq!(fit(10000, 10000, SIDE), None);
+        assert_eq!(fit(8, 16, SIDE), Some((8, 16)));
+        assert_eq!(fit(2400, 1200, 1024), Some((1024, 512)));
     }
 }

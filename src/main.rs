@@ -32,6 +32,10 @@ mod mission;
 mod overlay;
 #[cfg(windows)]
 mod preview;
+#[cfg(windows)]
+mod quick_content;
+#[cfg(windows)]
+mod quick_look;
 #[cfg(any(windows, test))]
 mod search;
 #[cfg(windows)]

@@ -3,6 +3,7 @@
 use crate::{
     files_directory::{self, Listing, Move, Navigation, Reader},
     overlay::{self, Palette},
+    quick_look::{self, QuickLook},
     windows::{report_for, wide},
 };
 use std::{
@@ -12,6 +13,7 @@ use std::{
     os::windows::ffi::{OsStrExt, OsStringExt},
     path::{Path, PathBuf},
     ptr::null_mut,
+    sync::{Arc, atomic::AtomicBool},
 };
 use windows_sys::{
     Win32::{
@@ -56,6 +58,8 @@ const FOLDERS: [(GUID, &str, &str); 4] = [
 
 struct State {
     reader: Option<Reader>,
+    preview: Option<QuickLook>,
+    preview_busy: Arc<AtomicBool>,
     navigation: Navigation,
     listing: Listing,
     requested: Option<(PathBuf, Move)>,
@@ -162,6 +166,8 @@ pub fn run(initial: Option<PathBuf>, palette: Palette, portuguese: bool) -> io::
         );
         let mut state = Box::new(State {
             reader: None,
+            preview: None,
+            preview_busy: Arc::default(),
             navigation: Navigation::default(),
             requested: None,
             listing: Listing::default(),
@@ -178,6 +184,7 @@ pub fn run(initial: Option<PathBuf>, palette: Palette, portuguese: bool) -> io::
         let result =
             initialise(hwnd, instance, state, initial).and_then(|()| run_loop(hwnd, state));
         if IsWindow(hwnd) != 0 {
+            drop((*state).preview.take());
             drop((*state).reader.take());
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
             DestroyWindow(hwnd);
@@ -341,6 +348,13 @@ unsafe fn run_loop(hwnd: HWND, state: *mut State) -> io::Result<()> {
 
 unsafe fn key(hwnd: HWND, state: *mut State, message: &MSG) -> bool {
     unsafe {
+        if let Some(preview) = (*state)
+            .preview
+            .as_ref()
+            .filter(|preview| preview.contains(message.hwnd))
+        {
+            return preview.handle_key(message);
+        }
         let edit = GetDlgItem(hwnd, PATH as i32);
         let list = GetDlgItem(hwnd, LIST as i32);
         let vk = message.wParam as u16;
@@ -386,6 +400,13 @@ unsafe fn key(hwnd: HWND, state: *mut State, message: &MSG) -> bool {
                 let selected =
                     SendMessageW(list, LVM_GETNEXTITEM, usize::MAX, LVNI_FOCUSED as isize);
                 activate(hwnd, state, selected as i32);
+            }
+            VK_SPACE if message.hwnd == list => {
+                if message.lParam & (1 << 30) == 0 {
+                    let selected =
+                        SendMessageW(list, LVM_GETNEXTITEM, usize::MAX, LVNI_FOCUSED as isize);
+                    preview(hwnd, state, selected as i32);
+                }
             }
             VK_RETURN if message.hwnd != hwnd => {
                 SendMessageW(message.hwnd, BM_CLICK, 0, 0);
@@ -662,6 +683,37 @@ unsafe fn activate(hwnd: HWND, state: *mut State, row: i32) {
     }
 }
 
+unsafe fn preview(hwnd: HWND, state: *mut State, row: i32) {
+    unsafe {
+        let entries = &(*state).listing.entries;
+        let Some((folder, entry)) = (*state).navigation.current().zip(entries.get(row as usize))
+        else {
+            return;
+        };
+        let path = folder.join(&entry.name);
+        drop((*state).preview.take());
+        match QuickLook::open(
+            hwnd,
+            path,
+            (*state).palette,
+            (*state).portuguese,
+            Arc::clone(&(*state).preview_busy),
+        ) {
+            Ok(preview) => (*state).preview = Some(preview),
+            Err(error) => report_for(
+                hwnd,
+                &format!(
+                    "{} · {error}",
+                    (*state).label(
+                        "Could not open Quick Look",
+                        "Não foi possível abrir a prévia"
+                    )
+                ),
+            ),
+        }
+    }
+}
+
 unsafe fn action(hwnd: HWND, state: *mut State, id: usize) {
     unsafe {
         match id {
@@ -753,6 +805,21 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
             return DefWindowProcW(hwnd, msg, wp, lp);
         }
         match msg {
+            quick_look::CLOSE => {
+                if (*state).preview.as_ref().is_some_and(|preview| {
+                    preview.handle() == wp as HWND
+                        && (lp != 0 || GetForegroundWindow() != preview.handle())
+                }) {
+                    if lp != 0 && GetForegroundWindow() == wp as HWND {
+                        SetForegroundWindow(hwnd);
+                    }
+                    drop((*state).preview.take());
+                    if lp != 0 && GetForegroundWindow() == hwnd {
+                        SetFocus(GetDlgItem(hwnd, LIST as i32));
+                    }
+                }
+                0
+            }
             files_directory::READY => {
                 complete(hwnd, state);
                 0
@@ -854,6 +921,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                 1
             }
             WM_CLOSE => {
+                drop((*state).preview.take());
                 drop((*state).reader.take());
                 DestroyWindow(hwnd);
                 0
