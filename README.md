@@ -29,6 +29,8 @@ language = "english"        # english, portuguese
 shortcut = "ctrl-alt-space" # win-space, ctrl-alt-space, disabled
 dock = false               # set true to opt in
 dock_pins = ["Visual Studio Code"] # exact Start menu shortcut names, in display order
+dock_monitor = "primary"           # primary, active
+dock_auto_hide = false             # reveal at the bottom of the work area
 top_bar = false            # set true to opt in
 ```
 
@@ -39,7 +41,7 @@ Invalid settings are preserved on disk and defaults are loaded. Rename the file 
 ## Project status
 
 - Implemented in the experimental build. Native Win32 launcher, local ranking of desktop shortcuts and open windows, calculator, opt-in running-window Dock, configurable shortcut, light and dark themes, and safe start.
-- Planned. Dock icons, previews, pointer auto-hide and per-display placement, additional Top Bar modules, media Island, workspaces, Files, indexing, optimisation, Android continuity, installer and release validation.
+- Planned. Dock icons, previews and simultaneous per-display Docks, additional Top Bar modules, media Island, workspaces, Files, indexing, optimisation, Android continuity, installer and release validation.
 - Unsupported by the current launcher. UWP app discovery, file search, web search and arbitrary command execution.
 
 The UI runs on the Win32 message queue and renders on demand. Spotlight builds its catalog on first use. Search and configuration are independent of Win32, with unit tests for ranking, discovery and recovery.

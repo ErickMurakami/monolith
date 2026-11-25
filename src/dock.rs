@@ -1,7 +1,7 @@
 //! Opt-in native Dock. All handles, hooks and callbacks belong to the GUI thread.
 
 use crate::{
-    config,
+    config::{self, DockMonitor},
     desktop::{self, WindowGroup},
     overlay::{self, Palette},
     search::App,
@@ -23,6 +23,7 @@ use windows_sys::Win32::{
 
 pub const SHOW_SPOTLIGHT: u32 = WM_APP + 1;
 const REFRESH: usize = 1;
+const HIDE: usize = 2;
 const SPOTLIGHT: u32 = 1;
 const EXIT: u32 = 2;
 const FIRST_WINDOW: u32 = 10;
@@ -42,6 +43,8 @@ pub struct Dock {
 pub struct Settings {
     pub pins: Vec<App>,
     pub order_path: PathBuf,
+    pub monitor: DockMonitor,
+    pub auto_hide: bool,
 }
 
 struct PinDrag {
@@ -62,6 +65,11 @@ struct State {
     brush: HBRUSH,
     font: HFONT,
     dpi: u32,
+    monitor: DockMonitor,
+    last_monitor: HMONITOR,
+    auto_hide: bool,
+    expanded: bool,
+    menu_open: bool,
     palette: Palette,
     portuguese: bool,
 }
@@ -118,6 +126,11 @@ impl Dock {
                     brush: CreateSolidBrush(palette.background),
                     font: null_mut(),
                     dpi: 0,
+                    monitor: settings.monitor,
+                    last_monitor: null_mut(),
+                    auto_hide: settings.auto_hide,
+                    expanded: !settings.auto_hide,
+                    menu_open: false,
                     palette,
                     portuguese,
                 }),
@@ -370,23 +383,87 @@ fn schedule_refresh(hwnd: HWND) {
     }
 }
 
-unsafe fn refresh(hwnd: HWND, state: *mut State) {
+unsafe fn dock_display(state: *mut State) -> Option<(HMONITOR, MONITORINFO)> {
     unsafe {
-        let monitor = MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY);
-        let mut display = MONITORINFO {
+        let primary = MonitorFromPoint(POINT::default(), MONITOR_DEFAULTTOPRIMARY);
+        let mut preferred = primary;
+        if (*state).monitor == DockMonitor::Active {
+            let foreground = GetForegroundWindow();
+            let mut pid = 0;
+            if GetWindowThreadProcessId(foreground, &mut pid) != 0 && pid != std::process::id() {
+                let active = MonitorFromWindow(foreground, MONITOR_DEFAULTTONULL);
+                if !active.is_null() {
+                    (*state).last_monitor = active;
+                }
+            }
+            if !(*state).last_monitor.is_null() {
+                preferred = (*state).last_monitor;
+            }
+        }
+        let mut info = MONITORINFO {
             cbSize: size_of::<MONITORINFO>() as u32,
             ..Default::default()
         };
-        if GetMonitorInfoW(monitor, &mut display) == 0
-            || desktop::foreground_covers_monitor(monitor, &display.rcMonitor)
-        {
+        if GetMonitorInfoW(preferred, &mut info) != 0 {
+            return Some((preferred, info));
+        }
+        (*state).last_monitor = primary;
+        (GetMonitorInfoW(primary, &mut info) != 0).then_some((primary, info))
+    }
+}
+
+unsafe fn refresh(hwnd: HWND, state: *mut State) {
+    unsafe {
+        let Some((monitor, display)) = dock_display(state) else {
+            ShowWindow(hwnd, SW_HIDE);
+            return;
+        };
+        if desktop::foreground_covers_monitor(monitor, &display.rcMonitor) {
             ShowWindow(hwnd, SW_HIDE);
             (*state).groups.clear();
+            if (*state).auto_hide {
+                (*state).expanded = false;
+                KillTimer(hwnd, HIDE);
+            }
             return;
         }
 
+        if MonitorFromWindow(hwnd, MONITOR_DEFAULTTONULL) != monitor {
+            // Query the destination DPI after relocating the still-hidden window.
+            SetWindowPos(
+                hwnd,
+                null_mut(),
+                display.rcWork.left,
+                display.rcWork.top,
+                1,
+                1,
+                SWP_HIDEWINDOW | SWP_NOZORDER | SWP_NOACTIVATE,
+            );
+        }
         let dpi = GetDpiForWindow(hwnd).max(96);
         let scale = |value| overlay::scale(value, dpi);
+        if !(*state).expanded {
+            let buttons = &(*state).buttons;
+            for &button in buttons {
+                ShowWindow(button, SW_HIDE);
+            }
+            (*state).visible_pins = 0;
+            (*state).groups.clear();
+            let work = display.rcWork;
+            let width = scale(120).min((work.right - work.left).max(1));
+            let height = scale(3);
+            SetWindowPos(
+                hwnd,
+                HWND_TOPMOST,
+                work.left + (work.right - work.left - width) / 2,
+                work.bottom - height,
+                width,
+                height,
+                SWP_SHOWWINDOW | SWP_NOACTIVATE,
+            );
+            InvalidateRect(hwnd, std::ptr::null(), 1);
+            return;
+        }
         if (*state).dpi != dpi {
             let font = CreateFontW(
                 -scale(13),
@@ -427,7 +504,8 @@ unsafe fn refresh(hwnd: HWND, state: *mut State) {
         let width = button_count as i32 * step + 2 * inset;
         let height = scale(37);
         let left = work.left + ((work.right - work.left - width) / 2).max(0);
-        let top = work.bottom - height - scale(8);
+        let margin = if (*state).auto_hide { 0 } else { scale(8) };
+        let top = work.bottom - height - margin;
 
         let spotlight = if (*state).portuguese {
             "Buscar"
@@ -574,7 +652,12 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
                         }
                         let groups = &(*state).groups;
                         if let Some(group) = groups.get(index - (*state).visible_pins) {
+                            (*state).menu_open = group.windows.len() > 1;
                             show_group(hwnd, lp as HWND, group);
+                            if (*state).menu_open {
+                                (*state).menu_open = false;
+                                schedule_refresh(hwnd);
+                            }
                         }
                     }
                     _ => {}
@@ -588,13 +671,45 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
             WM_ERASEBKGND => {
                 let mut area = RECT::default();
                 GetClientRect(hwnd, &mut area);
-                FillRect(wp as HDC, &area, (*state).brush);
+                if (*state).expanded {
+                    FillRect(wp as HDC, &area, (*state).brush);
+                } else {
+                    let previous = SetDCBrushColor(wp as HDC, (*state).palette.pressed);
+                    FillRect(wp as HDC, &area, GetStockObject(DC_BRUSH) as HBRUSH);
+                    SetDCBrushColor(wp as HDC, previous);
+                }
                 1
             }
             WM_TIMER if wp == REFRESH => {
                 KillTimer(hwnd, REFRESH);
                 REFRESH_PENDING.set(false);
+                if !(*state).menu_open {
+                    refresh(hwnd, state);
+                }
+                0
+            }
+            WM_MOUSEMOVE if !(*state).expanded => {
+                (*state).expanded = true;
                 refresh(hwnd, state);
+                if IsWindowVisible(hwnd) != 0 && (*state).expanded {
+                    SetTimer(hwnd, HIDE, 400, None);
+                }
+                0
+            }
+            WM_TIMER if wp == HIDE => {
+                KillTimer(hwnd, HIDE);
+                let mut cursor = POINT::default();
+                let mut bounds = RECT::default();
+                let busy = (*state).drag.is_some() || (*state).menu_open;
+                let hovered = GetCursorPos(&mut cursor) != 0
+                    && GetWindowRect(hwnd, &mut bounds) != 0
+                    && PtInRect(&bounds, cursor) != 0;
+                if busy || hovered {
+                    SetTimer(hwnd, HIDE, 400, None);
+                } else {
+                    (*state).expanded = false;
+                    refresh(hwnd, state);
+                }
                 0
             }
             WM_DISPLAYCHANGE | WM_SETTINGCHANGE | WM_DPICHANGED => {

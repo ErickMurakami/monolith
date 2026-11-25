@@ -14,7 +14,17 @@ pub struct Config {
     pub shortcut: Shortcut,
     pub dock: bool,
     pub dock_pins: Vec<String>,
+    pub dock_monitor: DockMonitor,
+    pub dock_auto_hide: bool,
     pub top_bar: bool,
+}
+
+#[derive(Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum DockMonitor {
+    #[default]
+    Primary,
+    Active,
 }
 
 #[derive(Debug, Default, Deserialize)]

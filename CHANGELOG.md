@@ -14,3 +14,4 @@
 - Added drag reordering of Dock pins and local order persistence.
 - Grouped Dock windows by application identity and added a native window chooser.
 - Added an opt-in borderless Top Bar with the native clock and battery status.
+- Added active-display Dock placement and an optional pointer reveal strip.

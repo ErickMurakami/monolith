@@ -4,6 +4,7 @@ param(
     [switch]$Pins,
     [switch]$Spotlight,
     [switch]$TopBar,
+    [switch]$AutoHide,
     [string]$Capture
 )
 
@@ -182,6 +183,69 @@ function Focus-Fixture($Form) {
         [DesktopSmoke]::GetForegroundWindow() -eq $Form.Handle
     } 'Fixture could not receive foreground focus.'
     $Form.TopMost = $false
+}
+
+function Invoke-AutoHideSmoke($Application) {
+    $fixture = New-Object Windows.Forms.Form
+    $root = Join-Path ([IO.Path]::GetTempPath()) ('monolith-visibility-' + [guid]::NewGuid().ToString('N'))
+    $oldLocal = $env:LOCALAPPDATA
+    $oldCursor = [Windows.Forms.Cursor]::Position
+    $launcher = $null
+    $bar = [IntPtr]::Zero
+    try {
+        $env:LOCALAPPDATA = $root
+        $directory = Join-Path $root 'Monolith'
+        New-Item -ItemType Directory -Path $directory | Out-Null
+        $config = Join-Path $directory 'config.toml'
+        @('dock = true','dock_monitor = "active"','dock_auto_hide = true','shortcut = "disabled"') |
+            Set-Content -Encoding ASCII $config
+        $fixture.Text = 'Dock auto-hide verification'
+        $fixture.Show()
+        $active = [DesktopSmoke]::GetForegroundWindow()
+        if ($active -eq [IntPtr]::Zero) { $active = $fixture.Handle }
+        $work = [Windows.Forms.Screen]::FromHandle($active).WorkingArea
+        $launcher = Start-Process -FilePath $Application -PassThru
+        Wait-Until {
+            [DesktopSmoke]::FindVisibleForProcess('MonolithDock', [uint32]$launcher.Id) -ne [IntPtr]::Zero
+        } 'The auto-hide reveal strip did not appear.'
+        $bar = [DesktopSmoke]::FindVisibleForProcess('MonolithDock', [uint32]$launcher.Id)
+        $strip = [DesktopSmoke]::Bounds($bar)
+        if ($strip[3] -ne $work.Bottom -or $strip[3]-$strip[1] -gt 10 -or
+            [Math]::Abs(($strip[0]+$strip[2])-($work.Left+$work.Right)) -gt 2) {
+            throw 'The reveal strip is not centred at the bottom of the active work area.'
+        }
+        [Windows.Forms.Cursor]::Position = [Drawing.Point]::new(
+            [int](($strip[0]+$strip[2])/2), [int](($strip[1]+$strip[3])/2)
+        )
+        Wait-Until {
+            $bounds = [DesktopSmoke]::Bounds($bar)
+            $bounds[3]-$bounds[1] -gt 20
+        } 'Moving over the reveal strip did not expand the Dock.'
+        $outside = [DesktopSmoke]::Bounds($fixture.Handle)
+        [Windows.Forms.Cursor]::Position = [Drawing.Point]::new(
+            [int](($outside[0]+$outside[2])/2), [int](($outside[1]+$outside[3])/2)
+        )
+        Wait-Until {
+            $bounds = [DesktopSmoke]::Bounds($bar)
+            $bounds[3]-$bounds[1] -le 10
+        } 'The Dock did not retract after the pointer left.'
+        'Active-display geometry and pointer auto-hide passed.'
+    } finally {
+        if ($launcher -and !$launcher.HasExited) {
+            if ($bar -ne [IntPtr]::Zero) { [void][DesktopSmoke]::Post($bar, 0x10, [UIntPtr]::Zero, [IntPtr]::Zero) }
+            if (!$launcher.WaitForExit(2000)) { Stop-Process -InputObject $launcher }
+        }
+        [Windows.Forms.Cursor]::Position = $oldCursor
+        $fixture.Dispose()
+        $env:LOCALAPPDATA = $oldLocal
+        if ([IO.Directory]::Exists($root)) {
+            $resolved = (Resolve-Path -LiteralPath $root).Path
+            $parent = (Resolve-Path -LiteralPath ([IO.Path]::GetTempPath())).Path.TrimEnd('\')
+            if ((Split-Path -Parent $resolved) -eq $parent -and (Split-Path -Leaf $resolved) -match '^monolith-visibility-[0-9a-f]{32}$') {
+                [IO.Directory]::Delete($resolved, $true)
+            }
+        }
+    }
 }
 
 function Invoke-TopBarSmoke($Application) {
@@ -484,11 +548,12 @@ function Invoke-DockSmoke($Application) {
 }
 
 $originalDpi = [DesktopSmoke]::SetThreadDpiAwarenessContext([IntPtr]::new(-4))
-if ($Dock -or $Pins -or $Spotlight -or $TopBar) {
+if ($Dock -or $Pins -or $Spotlight -or $TopBar -or $AutoHide) {
     try {
         if ($Pins) { Invoke-PinSmoke (Resolve-Path $Binary) }
         elseif ($Spotlight) { Invoke-SpotlightSmoke (Resolve-Path $Binary) }
         elseif ($TopBar) { Invoke-TopBarSmoke (Resolve-Path $Binary) }
+        elseif ($AutoHide) { Invoke-AutoHideSmoke (Resolve-Path $Binary) }
         else { Invoke-DockSmoke (Resolve-Path $Binary) }
     } finally {
         if ($originalDpi -ne [IntPtr]::Zero) {

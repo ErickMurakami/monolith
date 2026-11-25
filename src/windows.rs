@@ -177,7 +177,12 @@ pub fn run() -> io::Result<()> {
             state_ptr,
             settings.shortcut,
             resident,
-            show_dock.then_some(dock::Settings { pins, order_path }),
+            show_dock.then_some(dock::Settings {
+                pins,
+                order_path,
+                monitor: settings.dock_monitor,
+                auto_hide: settings.dock_auto_hide,
+            }),
             show_top_bar,
         );
         if IsWindow(hwnd) != 0 {
