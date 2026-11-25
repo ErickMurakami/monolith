@@ -44,6 +44,8 @@ After the borderless Spotlight and pin-reordering changes, two matched idle runs
 
 After adding Shell icons, twelve idle Dock samples across two runs measured 2.05-2.11 MiB of private working set, 19.36-19.41 MiB of total working set and 4.37-4.43 MiB of private bytes. The worker had loaded visible tiles and no preview was open. App CPU, GPU and I/O counters read zero at sample resolution. System busiest-engine GPU ranged from 1% to 15% at baseline and 1% to 4% during Dock sampling. The system values are workload observations.
 
+At `6fcb723`, two baseline and shell-idle pairs provided twelve samples per scenario. The Dock and Top Bar were visible, Spotlight was closed and the enabled Island had no active media presentation. The combined process used 2.33-2.36 MiB of private working set, 25.27-25.31 MiB of total working set and 5.03-5.07 MiB of private bytes. App CPU, busiest GPU engine and I/O counters read zero at sample resolution. System CPU ranged from 0% to 51% at baseline and 0% to 49% with the shell. System busiest-engine GPU ranged from 1% to 4% at baseline and 1% to 5% with the shell.
+
 ## Git and recovery
 
 The launcher, benchmark, calculator and window-switcher checkpoints are `e86dc9a`, `5f279bb`, `9b9b555` and `a8cef7b`. The project uses `main` and an SSH remote under the verified personal account. The Island media-session checkpoint `d8081a1` was fast-forwarded into `main`. Its merged development branch was removed locally. Workstation-specific records, configuration and raw benchmark exports stay local.

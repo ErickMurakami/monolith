@@ -1,7 +1,7 @@
 param(
     [ValidateRange(2, 120)][int]$Samples = 6,
     [ValidateRange(1, 30)][int]$IntervalSeconds = 2,
-    [ValidateSet('baseline', 'launcher', 'resident', 'dock')][string]$Scenario = 'baseline',
+    [ValidateSet('baseline', 'launcher', 'resident', 'dock', 'shell')][string]$Scenario = 'baseline',
     [string]$Output = 'artifacts/benchmark.json'
 )
 
