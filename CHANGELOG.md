@@ -11,3 +11,4 @@
 - Added an opt-in native Dock with live window titles, minimisation, restoration and fullscreen suppression.
 - Added ordered Dock pins from the shared Start menu shortcut catalogue.
 - Refined Spotlight into a borderless, DPI-aware overlay that dismisses on Escape or loss of focus.
+- Added drag reordering of Dock pins and local order persistence.

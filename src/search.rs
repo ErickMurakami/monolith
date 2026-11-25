@@ -26,6 +26,15 @@ pub fn resolve_pins(apps: &[App], names: &[String]) -> Vec<App> {
         .collect()
 }
 
+pub fn apply_pin_order(pins: &mut [App], names: &[String]) {
+    pins.sort_by_cached_key(|pin| {
+        names
+            .iter()
+            .position(|name| *name == pin.name)
+            .unwrap_or(usize::MAX)
+    });
+}
+
 fn scan(dir: &Path, depth: usize, apps: &mut Vec<App>) {
     if depth == 0 {
         return;
@@ -126,6 +135,19 @@ mod tests {
         assert_eq!(search(titles, " CoDE ", 3), [2, 0, 1]);
         assert_eq!(search(titles, "vsc", 1), [0]);
         assert!(search(titles, "zz", 10).is_empty());
+    }
+
+    #[test]
+    fn saved_order_reorders_current_pins_and_leaves_new_pins_at_the_end() {
+        let mut pins = ["Editor", "Terminal", "Browser"].map(|name| App {
+            name: name.into(),
+            path: PathBuf::new(),
+        });
+        apply_pin_order(
+            &mut pins,
+            &["Terminal".into(), "Old".into(), "Editor".into()],
+        );
+        assert_eq!(pins.map(|pin| pin.name), ["Terminal", "Editor", "Browser"]);
     }
 
     #[test]

@@ -1,16 +1,24 @@
 //! Opt-in native Dock. All handles, hooks and callbacks belong to the GUI thread.
 
 use crate::{
+    config,
     desktop::{self, Window},
     overlay::{self, Palette},
     search::App,
-    windows::{launch_shortcut, wide},
+    windows::{launch_shortcut, report_for, wide},
 };
-use std::{cell::Cell, ffi::c_void, io, mem::size_of, ptr::null_mut};
+use std::{cell::Cell, ffi::c_void, io, mem::size_of, path::PathBuf, ptr::null_mut};
 use windows_sys::Win32::{
     Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
     Graphics::Gdi::*,
-    UI::{Accessibility::*, Controls::*, HiDpi::GetDpiForWindow, WindowsAndMessaging::*},
+    UI::{
+        Accessibility::*,
+        Controls::*,
+        HiDpi::GetDpiForWindow,
+        Input::KeyboardAndMouse::{ReleaseCapture, SetCapture},
+        Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass},
+        WindowsAndMessaging::*,
+    },
 };
 
 pub const SHOW_SPOTLIGHT: u32 = WM_APP + 1;
@@ -31,11 +39,25 @@ pub struct Dock {
     state: Box<State>,
 }
 
+pub struct Settings {
+    pub pins: Vec<App>,
+    pub order_path: PathBuf,
+}
+
+struct PinDrag {
+    start: POINT,
+    from: usize,
+    over: Option<usize>,
+    moved: bool,
+}
+
 struct State {
     launcher: HWND,
     buttons: Vec<HWND>,
     windows: Vec<Window>,
     pins: Vec<App>,
+    order_path: PathBuf,
+    drag: Option<PinDrag>,
     visible_pins: usize,
     brush: HBRUSH,
     font: HFONT,
@@ -50,7 +72,7 @@ impl Dock {
         launcher: HWND,
         palette: Palette,
         portuguese: bool,
-        pins: Vec<App>,
+        settings: Settings,
     ) -> io::Result<Self> {
         // This constructor is called once, on the thread that pumps both windows.
         unsafe {
@@ -89,7 +111,9 @@ impl Dock {
                     launcher,
                     buttons: Vec::new(),
                     windows: Vec::new(),
-                    pins,
+                    pins: settings.pins,
+                    order_path: settings.order_path,
+                    drag: None,
                     visible_pins: 0,
                     brush: CreateSolidBrush(palette.background),
                     font: null_mut(),
@@ -122,6 +146,12 @@ impl Dock {
                     null_mut(),
                 );
                 if button.is_null() {
+                    return Err(io::Error::last_os_error());
+                }
+                if id >= FIRST_WINDOW
+                    && (*state).pins.len() > 1
+                    && SetWindowSubclass(button, Some(pin_button), 1, state as usize) == 0
+                {
                     return Err(io::Error::last_os_error());
                 }
                 (*state).buttons.push(button);
@@ -162,6 +192,135 @@ impl Dock {
             refresh(handle, state);
             Ok(dock)
         }
+    }
+}
+
+fn pin_index(id: u32, count: usize) -> Option<usize> {
+    id.checked_sub(FIRST_WINDOW)
+        .map(|index| index as usize)
+        .filter(|&index| index < count)
+}
+
+fn mouse_point(button: HWND, coordinates: LPARAM) -> Option<POINT> {
+    let mut point = POINT {
+        x: coordinates as i16 as i32,
+        y: (coordinates >> 16) as i16 as i32,
+    };
+    (unsafe { ClientToScreen(button, &mut point) } != 0).then_some(point)
+}
+
+unsafe fn repaint_buttons(state: *mut State) {
+    unsafe {
+        let buttons = &(*state).buttons;
+        for &button in buttons {
+            InvalidateRect(button, std::ptr::null(), 0);
+        }
+    }
+}
+
+unsafe extern "system" fn pin_button(
+    button: HWND,
+    message: u32,
+    wp: WPARAM,
+    lp: LPARAM,
+    _: usize,
+    reference: usize,
+) -> LRESULT {
+    // The parent Dock owns this state until all child windows have been destroyed.
+    unsafe {
+        let state = reference as *mut State;
+        let count = (*state).visible_pins;
+        let id = GetDlgCtrlID(button) as u32;
+        let parent = GetParent(button);
+        match message {
+            WM_LBUTTONDOWN | WM_LBUTTONDBLCLK if count > 1 => {
+                if let Some(from) = pin_index(id, count)
+                    && let Some(start) = mouse_point(button, lp)
+                {
+                    SetCapture(button);
+                    (*state).drag = Some(PinDrag {
+                        start,
+                        from,
+                        over: None,
+                        moved: false,
+                    });
+                    return 0;
+                }
+            }
+            WM_MOUSEMOVE | WM_LBUTTONUP if (*state).drag.is_some() => {
+                if let Some(point) = mouse_point(button, lp) {
+                    let hit = WindowFromPoint(point);
+                    let over = if !hit.is_null() && GetParent(hit) == parent {
+                        pin_index(GetDlgCtrlID(hit) as u32, count)
+                    } else {
+                        None
+                    };
+                    let threshold = overlay::scale(5, (*state).dpi) as u32;
+                    if let Some(drag) = (*state).drag.as_mut() {
+                        drag.moved |= drag.start.x.abs_diff(point.x) >= threshold
+                            || drag.start.y.abs_diff(point.y) >= threshold;
+                        let target = over.filter(|&to| drag.moved && to != drag.from);
+                        if drag.over != target {
+                            drag.over = target;
+                            repaint_buttons(state);
+                        }
+                    }
+                    if message == WM_LBUTTONUP {
+                        let drag = (*state).drag.take();
+                        ReleaseCapture();
+                        repaint_buttons(state);
+                        if let Some(drag) = drag {
+                            if let Some(to) = drag.over {
+                                reorder_pins(parent, state, drag.from, to);
+                            } else if !drag.moved && over == Some(drag.from) {
+                                PostMessageW(parent, WM_COMMAND, id as usize, button as isize);
+                            }
+                        }
+                    }
+                    return 0;
+                }
+                if message == WM_LBUTTONUP {
+                    (*state).drag = None;
+                    ReleaseCapture();
+                    repaint_buttons(state);
+                    return 0;
+                }
+            }
+            WM_CAPTURECHANGED => {
+                if (*state).drag.take().is_some() {
+                    repaint_buttons(state);
+                }
+            }
+            WM_NCDESTROY => {
+                RemoveWindowSubclass(button, Some(pin_button), 1);
+            }
+            _ => {}
+        }
+        DefSubclassProc(button, message, wp, lp)
+    }
+}
+
+unsafe fn reorder_pins(hwnd: HWND, state: *mut State, from: usize, to: usize) {
+    unsafe {
+        let count = (*state).visible_pins;
+        if from >= count || to >= count || from == to {
+            return;
+        }
+        let mut pins = (*state).pins.clone();
+        let pin = pins.remove(from);
+        pins.insert(to, pin);
+        let order = pins.iter().map(|pin| pin.name.clone()).collect();
+        if let Err(error) = config::save_dock_order(&(*state).order_path, order) {
+            let label = if (*state).portuguese {
+                "Não foi possível salvar a ordem do Dock"
+            } else {
+                "Could not save the Dock order"
+            };
+            report_for(hwnd, &format!("{label} ({error})"));
+            return;
+        }
+        (*state).pins = pins;
+        refresh(hwnd, state);
     }
 }
 
@@ -364,12 +523,15 @@ unsafe fn draw(state: *mut State, item: &DRAWITEMSTRUCT) {
             DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX,
         );
         let windows = &(*state).windows;
-        if item
-            .CtlID
-            .checked_sub(FIRST_WINDOW)
-            .and_then(|index| (index as usize).checked_sub((*state).visible_pins))
-            .and_then(|index| windows.get(index))
-            .is_some_and(|window| window.active)
+        let drop_target = pin_index(item.CtlID, (*state).visible_pins)
+            .is_some_and(|index| (*state).drag.as_ref().and_then(|drag| drag.over) == Some(index));
+        if drop_target
+            || item
+                .CtlID
+                .checked_sub(FIRST_WINDOW)
+                .and_then(|index| (index as usize).checked_sub((*state).visible_pins))
+                .and_then(|index| windows.get(index))
+                .is_some_and(|window| window.active)
         {
             let centre = area.left + (area.right - area.left) / 2;
             let indicator = RECT {

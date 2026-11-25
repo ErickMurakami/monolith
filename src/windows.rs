@@ -67,7 +67,7 @@ pub fn report(message: &str) {
     report_for(null_mut(), message);
 }
 
-fn report_for(owner: HWND, message: &str) {
+pub(crate) fn report_for(owner: HWND, message: &str) {
     // Strings remain valid until the modal call returns.
     unsafe {
         MessageBoxW(
@@ -158,11 +158,14 @@ pub fn run() -> io::Result<()> {
         let state_ptr = Box::into_raw(state);
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, state_ptr as isize);
         let show_dock = !safe && (settings.dock || args.iter().any(|arg| arg == "--dock"));
+        let order_path = config_path.with_file_name("dock-order.toml");
         let pins = if show_dock && !settings.dock_pins.is_empty() {
             let apps = (*state_ptr)
                 .apps
                 .get_or_insert_with(|| search::discover(roots()));
-            search::resolve_pins(apps, &settings.dock_pins)
+            let mut pins = search::resolve_pins(apps, &settings.dock_pins);
+            search::apply_pin_order(&mut pins, &config::load_dock_order(&order_path));
+            pins
         } else {
             Vec::new()
         };
@@ -172,8 +175,7 @@ pub fn run() -> io::Result<()> {
             state_ptr,
             settings.shortcut,
             resident,
-            show_dock,
-            pins,
+            show_dock.then_some(dock::Settings { pins, order_path }),
         );
         if IsWindow(hwnd) != 0 {
             DestroyWindow(hwnd);
@@ -190,8 +192,7 @@ unsafe fn run_window(
     state: *mut State,
     shortcut: Shortcut,
     resident: bool,
-    show_dock: bool,
-    pins: Vec<App>,
+    dock_settings: Option<dock::Settings>,
 ) -> io::Result<()> {
     unsafe {
         let edit = CreateWindowExW(
@@ -262,8 +263,14 @@ unsafe fn run_window(
                 .as_ptr() as isize,
             );
         }
-        let dock = if show_dock {
-            match Dock::new(instance, hwnd, (*state).palette, (*state).portuguese, pins) {
+        let dock = if let Some(settings) = dock_settings {
+            match Dock::new(
+                instance,
+                hwnd,
+                (*state).palette,
+                (*state).portuguese,
+                settings,
+            ) {
                 Ok(dock) => Some(dock),
                 Err(error) => {
                     report(&format!("Could not open the Dock ({error})"));

@@ -1,5 +1,10 @@
-use serde::Deserialize;
-use std::{fs, io, path::Path};
+use serde::{Deserialize, Serialize};
+use std::{
+    fs,
+    io::{self, Write},
+    path::Path,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -62,6 +67,44 @@ pub fn load(path: &Path, safe: bool) -> (Config, Option<String>) {
     }
 }
 
+#[derive(Deserialize, Serialize)]
+struct DockOrder {
+    pins: Vec<String>,
+}
+
+pub fn load_dock_order(path: &Path) -> Vec<String> {
+    fs::read_to_string(path)
+        .ok()
+        .and_then(|source| toml::from_str::<DockOrder>(&source).ok())
+        .map_or_else(Vec::new, |order| order.pins)
+}
+
+pub fn save_dock_order(path: &Path, pins: Vec<String>) -> io::Result<()> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "Invalid Dock order path"))?;
+    let source = toml::to_string(&DockOrder { pins }).map_err(io::Error::other)?;
+    fs::create_dir_all(parent)?;
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(io::Error::other)?;
+    let temp = parent.join(format!(
+        ".dock-order-{}-{}.tmp",
+        std::process::id(),
+        stamp.as_nanos()
+    ));
+    let mut file = fs::File::create_new(&temp)?;
+    let written = file
+        .write_all(source.as_bytes())
+        .and_then(|()| file.sync_all());
+    drop(file);
+    let result = written.and_then(|()| fs::rename(&temp, path));
+    if result.is_err() {
+        let _ = fs::remove_file(&temp);
+    }
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -87,5 +130,18 @@ mod tests {
         assert!(matches!(config.shortcut, Shortcut::Disabled));
         assert!(!config.dock);
         assert!(issue.is_none());
+    }
+
+    #[test]
+    fn replaces_the_previous_order_in_a_separate_file() -> io::Result<()> {
+        let root = std::env::temp_dir().join(format!("monolith-pin-order-{}", std::process::id()));
+        let order = root.join("dock-order.toml");
+        save_dock_order(&order, vec!["First".into(), "Second".into()])?;
+        save_dock_order(&order, vec!["Second".into(), "First".into()])?;
+        let saved = load_dock_order(&order);
+        fs::remove_file(order)?;
+        fs::remove_dir(root)?;
+        assert_eq!(saved, ["Second", "First"]);
+        Ok(())
     }
 }

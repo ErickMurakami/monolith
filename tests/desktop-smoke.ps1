@@ -77,6 +77,36 @@ public static class DesktopSmoke {
                 SetCursorPos(original.X, original.Y);
         }
     }
+    public static bool Drag(IntPtr from, IntPtr to) {
+        int[] start = Bounds(from);
+        int[] end = Bounds(to);
+        Point first = new Point { X = (start[0] + start[2]) / 2, Y = (start[1] + start[3]) / 2 };
+        Point second = new Point { X = (end[0] + end[2]) / 2, Y = (end[1] + end[3]) / 2 };
+        Point original;
+        if (!GetCursorPos(out original) || WindowFromPoint(first) != from || WindowFromPoint(second) != to)
+            return false;
+        int size = Marshal.SizeOf(typeof(Input));
+        var down = new[] { new Input { Mouse = new MouseInput { Flags = 0x0002 } } };
+        var up = new[] { new Input { Mouse = new MouseInput { Flags = 0x0004 } } };
+        bool held = false;
+        try {
+            if (!SetCursorPos(first.X, first.Y) || WindowFromPoint(first) != from || SendInput(1, down, size) != 1)
+                return false;
+            held = true;
+            System.Threading.Thread.Sleep(80);
+            if (!SetCursorPos(second.X, second.Y) || WindowFromPoint(second) != to)
+                return false;
+            System.Threading.Thread.Sleep(120);
+            held = SendInput(1, up, size) != 1;
+            return !held;
+        } finally {
+            if (held) SendInput(1, up, size);
+            Point current;
+            if (GetCursorPos(out current) &&
+                ((current.X == first.X && current.Y == first.Y) || (current.X == second.X && current.Y == second.Y)))
+                SetCursorPos(original.X, original.Y);
+        }
+    }
 }
 "@
 
@@ -206,9 +236,22 @@ function Invoke-PinSmoke($Application) {
         if ([DesktopSmoke]::FindWindowEx($dockWindow, $first, 'Button', 'Verification Z') -ne [IntPtr]::Zero) {
             throw 'A repeated pin was rendered twice.'
         }
+        if (![DesktopSmoke]::Drag($first, $second)) { throw 'Could not drag the pins.' }
+        $orderPath = Join-Path $config 'dock-order.toml'
+        Wait-Until { (Test-Path -LiteralPath $orderPath) } 'Dock order was not saved.'
+        if (Test-Path -LiteralPath $marker) { throw 'Dragging a pin launched its shortcut.' }
+        [void][DesktopSmoke]::Post($dockWindow, 0x10, [UIntPtr]::Zero, [IntPtr]::Zero)
+        Wait-Until { $launcher.HasExited } 'Dock did not exit before the restart.'
+        $dockWindow = [IntPtr]::Zero
+        $launcher = Start-Process -FilePath $Application -PassThru
+        Wait-Until { [DesktopSmoke]::IsWindowVisible([DesktopSmoke]::FindClass('MonolithDock')) } 'The Dock did not restart.'
+        $dockWindow = [DesktopSmoke]::FindClass('MonolithDock')
+        $first = [DesktopSmoke]::FindWindowEx($dockWindow, [IntPtr]::Zero, 'Button', 'Verification A')
+        $second = [DesktopSmoke]::FindWindowEx($dockWindow, [IntPtr]::Zero, 'Button', 'Verification Z')
+        if ([DesktopSmoke]::Left($first) -ge [DesktopSmoke]::Left($second)) { throw 'Dragged order was lost on restart.' }
         if (![DesktopSmoke]::Click($first)) { throw 'Could not click the first pin.' }
         Wait-Until { Test-Path -LiteralPath $marker } 'The pinned shortcut did not run.'
-        'Dock pin order, deduplication and shortcut launch passed.'
+        'Dock pin ordering, drag persistence, deduplication and shortcut launch passed.'
     } finally {
         if ($launcher -and !$launcher.HasExited) {
             if ($dockWindow -ne [IntPtr]::Zero) {
