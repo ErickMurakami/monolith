@@ -13,8 +13,63 @@ const CLASS: &str = "MonolithDockPreview";
 
 pub struct Preview {
     window: HWND,
-    thumbnail: isize,
+    thumbnail: Option<Thumbnail>,
     brush: HBRUSH,
+}
+
+pub struct Thumbnail {
+    handle: isize,
+    size: SIZE,
+}
+
+impl Thumbnail {
+    pub fn register(destination: HWND, target: WindowTarget) -> Option<Self> {
+        let source = target.preview_source()?;
+        unsafe {
+            let mut handle = 0;
+            if DwmRegisterThumbnail(destination, source, &mut handle) < 0 {
+                return None;
+            }
+            let mut thumbnail = Self {
+                handle,
+                size: SIZE::default(),
+            };
+            (DwmQueryThumbnailSourceSize(handle, &mut thumbnail.size) >= 0).then_some(thumbnail)
+        }
+    }
+
+    fn fit(&self, width: i32, height: i32) -> Option<(i32, i32)> {
+        fit_thumbnail(self.size, width, height)
+    }
+
+    pub fn show(&self, area: RECT) -> bool {
+        let available_width = area.right - area.left;
+        let available_height = area.bottom - area.top;
+        let Some((width, height)) = self.fit(available_width, available_height) else {
+            return false;
+        };
+        let left = area.left + (available_width - width) / 2;
+        let top = area.top + (available_height - height) / 2;
+        let properties = DWM_THUMBNAIL_PROPERTIES {
+            dwFlags: DWM_TNP_RECTDESTINATION | DWM_TNP_VISIBLE | DWM_TNP_OPACITY,
+            rcDestination: RECT {
+                left,
+                top,
+                right: left + width,
+                bottom: top + height,
+            },
+            opacity: u8::MAX,
+            fVisible: 1,
+            ..Default::default()
+        };
+        unsafe { DwmUpdateThumbnailProperties(self.handle, &properties) >= 0 }
+    }
+}
+
+impl Drop for Thumbnail {
+    fn drop(&mut self) {
+        unsafe { DwmUnregisterThumbnail(self.handle) };
+    }
 }
 
 pub fn register() -> io::Result<()> {
@@ -36,7 +91,6 @@ pub fn register() -> io::Result<()> {
 
 impl Preview {
     pub fn open(dock: HWND, button: HWND, target: WindowTarget, colour: u32) -> Option<Self> {
-        let source = target.preview_source()?;
         // All destination state remains on the Dock's thread. DWM owns the
         // rendering link and enforces the source window's capture policy.
         unsafe {
@@ -71,26 +125,21 @@ impl Preview {
             }
             let mut preview = Self {
                 window,
-                thumbnail: 0,
+                thumbnail: None,
                 brush: CreateSolidBrush(colour),
             };
-            if preview.brush.is_null()
-                || DwmRegisterThumbnail(window, source, &mut preview.thumbnail) < 0
-            {
+            if preview.brush.is_null() {
                 return None;
             }
+            let thumbnail = Thumbnail::register(window, target)?;
             SetWindowLongPtrW(window, GWLP_USERDATA, preview.brush as isize);
-            let mut source_size = SIZE::default();
-            if DwmQueryThumbnailSourceSize(preview.thumbnail, &mut source_size) < 0 {
-                return None;
-            }
             let work = info.rcWork;
             let dpi = GetDpiForWindow(dock);
             let pad = overlay::scale(4, dpi);
             let gap = overlay::scale(8, dpi);
             let max_width = overlay::scale(272, dpi).min(work.right - work.left - 2 * pad);
             let max_height = overlay::scale(170, dpi).min(anchor.top - work.top - 2 * pad - gap);
-            let (width, height) = fit_thumbnail(source_size, max_width, max_height)?;
+            let (width, height) = thumbnail.fit(max_width, max_height)?;
             let frame_width = width + 2 * pad;
             let frame_height = height + 2 * pad;
             let centre = anchor.left + (anchor.right - anchor.left) / 2;
@@ -108,21 +157,15 @@ impl Preview {
             {
                 return None;
             }
-            let properties = DWM_THUMBNAIL_PROPERTIES {
-                dwFlags: DWM_TNP_RECTDESTINATION | DWM_TNP_VISIBLE | DWM_TNP_OPACITY,
-                rcDestination: RECT {
-                    left: pad,
-                    top: pad,
-                    right: pad + width,
-                    bottom: pad + height,
-                },
-                opacity: u8::MAX,
-                fVisible: 1,
-                ..Default::default()
-            };
-            if DwmUpdateThumbnailProperties(preview.thumbnail, &properties) < 0 {
+            if !thumbnail.show(RECT {
+                left: pad,
+                top: pad,
+                right: pad + width,
+                bottom: pad + height,
+            }) {
                 return None;
             }
+            preview.thumbnail = Some(thumbnail);
             ShowWindow(window, SW_SHOWNOACTIVATE);
             Some(preview)
         }
@@ -131,10 +174,8 @@ impl Preview {
 
 impl Drop for Preview {
     fn drop(&mut self) {
+        drop(self.thumbnail.take());
         unsafe {
-            if self.thumbnail != 0 {
-                DwmUnregisterThumbnail(self.thumbnail);
-            }
             DestroyWindow(self.window);
             DeleteObject(self.brush);
         }

@@ -7,9 +7,9 @@ use crate::{
     overlay::{self, Palette},
     preview::{self, Preview},
     search::App,
-    windows::{launch_shortcut, report_for, wide},
+    windows::{launch_shortcut, report_for, shell_menu, wide},
 };
-use std::{cell::Cell, ffi::c_void, io, mem::size_of, path::PathBuf, ptr::null_mut};
+use std::{cell::Cell, ffi::c_void, io, mem::size_of, path::PathBuf, ptr::null_mut, rc::Rc};
 use windows_sys::Win32::{
     Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
     Graphics::Gdi::*,
@@ -63,6 +63,7 @@ struct State {
     launcher: HWND,
     buttons: Vec<HWND>,
     groups: Vec<WindowGroup>,
+    inventory: Option<Rc<desktop::Snapshot>>,
     pins: Vec<App>,
     order_path: PathBuf,
     drag: Option<PinDrag>,
@@ -110,6 +111,10 @@ impl State {
 }
 
 impl Dock {
+    pub fn inventory(&self) -> Option<Rc<desktop::Snapshot>> {
+        self.state.inventory.clone()
+    }
+
     pub fn new(
         instance: *mut c_void,
         launcher: HWND,
@@ -155,6 +160,7 @@ impl Dock {
                     launcher,
                     buttons: Vec::new(),
                     groups: Vec::new(),
+                    inventory: None,
                     pins: settings.pins,
                     order_path: settings.order_path,
                     drag: None,
@@ -554,12 +560,14 @@ unsafe fn refresh(hwnd: HWND, state: *mut State) {
     unsafe {
         drop((*state).preview.take());
         let Some((monitor, display)) = dock_display(state) else {
+            (*state).inventory = None;
             ShowWindow(hwnd, SW_HIDE);
             return;
         };
         if desktop::foreground_covers_monitor(monitor, &display.rcMonitor) {
             ShowWindow(hwnd, SW_HIDE);
             (*state).groups.clear();
+            (*state).inventory = None;
             if (*state).auto_hide {
                 (*state).expanded = false;
                 KillTimer(hwnd, HIDE);
@@ -588,6 +596,7 @@ unsafe fn refresh(hwnd: HWND, state: *mut State) {
             }
             (*state).visible_pins = 0;
             (*state).groups.clear();
+            (*state).inventory = None;
             let work = display.rcWork;
             let width = scale(120).min((work.right - work.left).max(1));
             let height = scale(3);
@@ -632,9 +641,12 @@ unsafe fn refresh(hwnd: HWND, state: *mut State) {
         let step = scale(76).min(((work.right - work.left - 2 * inset) / 2).max(1));
         let capacity =
             (((work.right - work.left - 2 * inset) / step) - 2).clamp(0, CAPACITY as i32) as usize;
-        let mut groups = desktop::snapshot()
-            .map(|snapshot| desktop::group_windows(snapshot.windows))
+        let inventory = desktop::snapshot().ok().map(Rc::new);
+        let mut groups = inventory
+            .as_ref()
+            .map(|snapshot| desktop::group_windows(snapshot.windows.clone()))
             .unwrap_or_default();
+        (*state).inventory = inventory;
         let pin_count = (*state).pins.len().min(capacity);
         (*state).visible_pins = pin_count;
         groups.truncate(capacity - pin_count);
@@ -775,6 +787,13 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
             return DefWindowProcW(hwnd, message, wp, lp);
         }
         match message {
+            WM_CONTEXTMENU => {
+                (*state).menu_open = true;
+                shell_menu(hwnd, (*state).launcher, (*state).portuguese);
+                (*state).menu_open = false;
+                schedule_refresh(hwnd);
+                0
+            }
             WM_CLOSE => {
                 PostMessageW((*state).launcher, WM_CLOSE, 0, 0);
                 0

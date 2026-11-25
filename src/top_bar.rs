@@ -1,10 +1,9 @@
 //! Opt-in borderless status overlay with native clock and power data.
 
 use crate::{
-    control_center, desktop,
-    dock::SHOW_SPOTLIGHT,
+    desktop,
     overlay::{self, Palette},
-    windows::wide,
+    windows::{shell_menu, wide},
 };
 use std::{cell::Cell, ffi::c_void, io, mem::size_of, ptr::null_mut};
 use windows_sys::Win32::{
@@ -293,46 +292,6 @@ unsafe fn refresh_status(hwnd: HWND, state: *mut State) {
     }
 }
 
-pub(crate) unsafe fn menu(hwnd: HWND, launcher: HWND, portuguese: bool) {
-    unsafe {
-        let menu = CreatePopupMenu();
-        if menu.is_null() {
-            return;
-        }
-        let search = if portuguese { "Buscar" } else { "Search" };
-        let center = if portuguese {
-            "Central de Controle"
-        } else {
-            "Control Center"
-        };
-        let exit = if portuguese { "Sair" } else { "Exit" };
-        AppendMenuW(menu, MF_STRING, 1, wide(search).as_ptr());
-        AppendMenuW(menu, MF_STRING, 3, wide(center).as_ptr());
-        AppendMenuW(menu, MF_STRING, 2, wide(exit).as_ptr());
-        let mut point = POINT::default();
-        if GetCursorPos(&mut point) != 0 {
-            SetForegroundWindow(hwnd);
-            let selected = TrackPopupMenuEx(
-                menu,
-                TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON,
-                point.x,
-                point.y,
-                hwnd,
-                null_mut(),
-            );
-            PostMessageW(hwnd, WM_NULL, 0, 0);
-            if selected == 1 {
-                PostMessageW(launcher, SHOW_SPOTLIGHT, 0, 0);
-            } else if selected == 2 {
-                PostMessageW(launcher, WM_CLOSE, 0, 0);
-            } else if selected == 3 {
-                PostMessageW(launcher, control_center::OPEN, hwnd as usize, 0);
-            }
-        }
-        DestroyMenu(menu);
-    }
-}
-
 unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     unsafe {
         let state = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut State;
@@ -345,7 +304,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                 0
             }
             WM_CONTEXTMENU => {
-                menu(hwnd, (*state).launcher, (*state).portuguese);
+                shell_menu(hwnd, (*state).launcher, (*state).portuguese);
                 0
             }
             WM_TIMER if wp == CLOCK => {

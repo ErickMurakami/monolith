@@ -4,8 +4,7 @@ use crate::{
     desktop,
     media::{self, Action, Media, NowPlaying},
     overlay::{self, Palette},
-    top_bar,
-    windows::wide,
+    windows::{shell_menu, wide},
 };
 use std::{cell::Cell, ffi::c_void, io, mem::size_of, ptr::null_mut};
 use windows_sys::Win32::{
@@ -552,7 +551,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                 0
             }
             WM_CONTEXTMENU => {
-                top_bar::menu(hwnd, (*state).launcher, (*state).portuguese);
+                shell_menu(hwnd, (*state).launcher, (*state).portuguese);
                 0
             }
             WM_CLOSE => {

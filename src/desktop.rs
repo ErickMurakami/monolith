@@ -1,6 +1,6 @@
 //! Read-only desktop discovery and explicit, user-initiated window activation.
 
-use std::{collections::HashMap, io, mem::size_of, path::PathBuf, ptr::null_mut};
+use std::{collections::HashMap, io, mem::size_of, path::PathBuf, ptr::null_mut, rc::Rc};
 use windows_sys::Win32::{
     Foundation::{CloseHandle, ERROR_INSUFFICIENT_BUFFER, GetLastError, HWND, LPARAM, RECT},
     Graphics::{
@@ -40,7 +40,7 @@ pub struct WindowTarget {
 }
 
 pub struct Snapshot {
-    pub windows: Vec<Window>,
+    pub windows: Vec<Rc<Window>>,
     pub monitor_count: usize,
 }
 
@@ -51,7 +51,7 @@ enum AppIdentity {
 }
 
 pub struct WindowGroup {
-    pub windows: Vec<Window>,
+    pub windows: Vec<Rc<Window>>,
     pub icon_path: Option<PathBuf>,
 }
 
@@ -72,7 +72,7 @@ impl WindowGroup {
     }
 }
 
-pub fn group_windows(mut windows: Vec<Window>) -> Vec<WindowGroup> {
+pub fn group_windows(mut windows: Vec<Rc<Window>>) -> Vec<WindowGroup> {
     windows.sort_by_cached_key(|window| window.title.to_lowercase());
     let mut apps = HashMap::new();
     let mut group_indices = HashMap::new();
@@ -216,6 +216,7 @@ pub fn snapshot() -> io::Result<Snapshot> {
         .into_iter()
         .filter(|&hwnd| hwnd != shell && hwnd != desktop)
         .filter_map(|hwnd| describe(hwnd, own_process, foreground, &displays))
+        .map(Rc::new)
         .collect();
     // Preserve native enumeration order for the other windows.
     if let Some(index) = windows.iter().position(|window| window.active) {

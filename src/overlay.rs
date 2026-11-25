@@ -83,6 +83,15 @@ pub unsafe fn fill(hdc: HDC, bounds: &RECT, colour: u32) {
 }
 
 pub unsafe fn paint_button(item: &DRAWITEMSTRUCT, palette: Palette, font: HFONT) {
+    unsafe { paint_button_at(item, palette, font, item.rcItem) };
+}
+
+pub unsafe fn paint_button_at(
+    item: &DRAWITEMSTRUCT,
+    palette: Palette,
+    font: HFONT,
+    mut text_area: RECT,
+) {
     unsafe {
         let saved = SaveDC(item.hDC);
         if saved == 0 {
@@ -110,15 +119,15 @@ pub unsafe fn paint_button(item: &DRAWITEMSTRUCT, palette: Palette, font: HFONT)
         );
         let mut title = [0_u16; 64];
         let count = GetWindowTextW(item.hwndItem, title.as_mut_ptr(), title.len() as i32);
-        let mut bounds = item.rcItem;
         DrawTextW(
             item.hDC,
             title.as_mut_ptr(),
             count,
-            &mut bounds,
+            &mut text_area,
             DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS,
         );
         if item.itemState & ODS_FOCUS != 0 {
+            let mut bounds = item.rcItem;
             InflateRect(&mut bounds, -3, -3);
             DrawFocusRect(item.hDC, &bounds);
         }

@@ -132,7 +132,7 @@ try {
         if (![DesktopSmoke]::RightClickLeftEdge($bar)) { throw 'Could not open the Top Bar menu.' }
         Wait-Until { [DesktopSmoke]::FindVisibleForProcess('#32768', [uint32]$launcher.Id) -ne [IntPtr]::Zero } 'The Top Bar menu did not appear.'
         $menu = [DesktopSmoke]::FindVisibleForProcess('#32768', [uint32]$launcher.Id)
-        if (![DesktopSmoke]::ClickAt($menu, 0.5)) { throw 'Could not select Control Center.' }
+        if (![DesktopSmoke]::ClickAt($menu, 0.625)) { throw 'Could not select Control Center.' }
         Wait-Until { (Find-Panel $launcher) -ne [IntPtr]::Zero } 'The menu did not open Control Center.'
         Find-Panel $launcher
     }

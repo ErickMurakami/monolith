@@ -22,3 +22,4 @@
 - Added playback progress based on the Windows media timeline.
 - Added artwork loaded on demand from the active Windows media session.
 - Added the borderless Control Center with native volume and mute, battery status and Windows settings shortcuts.
+- Added a Mission Control window overview with live thumbnails, mouse and keyboard selection, and a native Task View action.

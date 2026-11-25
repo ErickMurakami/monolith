@@ -25,6 +25,8 @@ Launch with `--island` to display the title and artist from the current Windows 
 
 Launch with `--control-center` or use the Top Bar menu to open a borderless panel. It adjusts volume and mute for the Windows default audio output and shows the battery percentage when available. The settings buttons open the corresponding Windows pages for Wi-Fi, Bluetooth, display, night light, sound devices, focus and power. Use Tab and the arrow keys to navigate and adjust the volume. Escape or a focus change closes the panel.
 
+Launch with `--mission-control` or select **Mission Control** from the Dock or Top Bar context menu. The borderless overview shows open windows with live Windows thumbnails where available. Click a window or select it with the arrow keys and Enter. Use Page Up and Page Down for more windows and F5 to refresh the inventory. **Windows Task View** opens the original desktop manager for creating, arranging and moving windows between desktops.
+
 Monolith tries Win+Space first. If Windows reports that chord is already registered, Monolith registers Ctrl+Alt+Space as its fallback and displays it in the search placeholder. With `--resident`, the registered shortcut opens Spotlight and a second press dismisses it. Escape returns focus to the previous window when Windows permits it. To change the binding, create `%LOCALAPPDATA%\Monolith\config.toml` and restart Monolith.
 
 ```toml
@@ -65,3 +67,5 @@ See [project status](MONOLITH_STATUS.md) and [benchmark procedure](benchmarks/RE
 ![Dynamic Island showing a live local media session and transport controls](docs/island.png)
 
 ![Control Center with native volume and links to Windows settings](docs/control-center.png)
+
+![Two live window thumbnails in the Mission Control grid](docs/mission.png)

@@ -6,12 +6,14 @@ use crate::{
     dock::{self, Dock},
     hotkey::{self, Hotkey, Notice},
     island::Island,
+    mission::{self, Mission},
     overlay::{self, Palette},
     search::{self, App},
     top_bar::TopBar,
 };
 use std::{
     env, ffi::c_void, io, mem::size_of, os::windows::ffi::OsStrExt, path::PathBuf, ptr::null_mut,
+    rc::Rc,
 };
 use windows_sys::Win32::{
     Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
@@ -38,7 +40,7 @@ enum Match {
 
 struct State {
     apps: Option<Vec<App>>,
-    desktop: Option<desktop::Snapshot>,
+    desktop: Option<Rc<desktop::Snapshot>>,
     matches: Vec<Match>,
     edit: HWND,
     results: HWND,
@@ -57,6 +59,7 @@ struct SurfaceOptions {
     top_bar: bool,
     island: bool,
     control_center: bool,
+    mission: bool,
 }
 
 impl Drop for State {
@@ -87,6 +90,49 @@ pub(crate) fn report_for(owner: HWND, message: &str) {
             wide("Monolith").as_ptr(),
             MB_OK | MB_ICONWARNING,
         );
+    }
+}
+
+pub(crate) unsafe fn shell_menu(hwnd: HWND, launcher: HWND, portuguese: bool) {
+    unsafe {
+        let menu = CreatePopupMenu();
+        if menu.is_null() {
+            return;
+        }
+        let actions = [
+            ("Search", "Buscar", dock::SHOW_SPOTLIGHT),
+            ("Mission Control", "Controle de Janelas", mission::OPEN),
+            (
+                "Control Center",
+                "Central de Controle",
+                control_center::OPEN,
+            ),
+            ("Exit", "Sair", WM_CLOSE),
+        ];
+        for (index, (english, translated, _)) in actions.iter().enumerate() {
+            let label = if portuguese { translated } else { english };
+            AppendMenuW(menu, MF_STRING, index + 1, wide(label).as_ptr());
+        }
+        let mut point = POINT::default();
+        if GetCursorPos(&mut point) != 0 {
+            SetForegroundWindow(hwnd);
+            let selected = TrackPopupMenuEx(
+                menu,
+                TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON,
+                point.x,
+                point.y,
+                hwnd,
+                null_mut(),
+            );
+            PostMessageW(hwnd, WM_NULL, 0, 0);
+            if let Some((_, _, action)) = (selected as usize)
+                .checked_sub(1)
+                .and_then(|index| actions.get(index))
+            {
+                PostMessageW(launcher, *action, hwnd as usize, 0);
+            }
+        }
+        DestroyMenu(menu);
     }
 }
 
@@ -201,6 +247,7 @@ pub fn run() -> io::Result<()> {
                 top_bar: show_top_bar,
                 island: show_island,
                 control_center: !safe && args.iter().any(|arg| arg == "--control-center"),
+                mission: !safe && args.iter().any(|arg| arg == "--mission-control"),
             },
         );
         if IsWindow(hwnd) != 0 {
@@ -331,7 +378,19 @@ unsafe fn run_window(
         (*state).can_hide = dock.is_some()
             || top_bar.is_some()
             || ((resident || island.is_some()) && hotkey.available());
-        let mut center = if surfaces.control_center {
+        let mut mission = if surfaces.mission {
+            Some(Mission::new(
+                instance,
+                hwnd,
+                null_mut(),
+                (*state).palette,
+                (*state).portuguese,
+                dock.as_ref().and_then(Dock::inventory),
+            )?)
+        } else {
+            None
+        };
+        let mut center = if surfaces.control_center && mission.is_none() {
             Some(ControlCenter::new(
                 instance,
                 hwnd,
@@ -342,8 +401,8 @@ unsafe fn run_window(
         } else {
             None
         };
-        if !(*state).can_hide && center.is_none() {
-            show(hwnd, state);
+        if !(*state).can_hide && center.is_none() && mission.is_none() {
+            show(hwnd, state, dock.as_ref());
         }
 
         let mut msg = MSG::default();
@@ -354,7 +413,7 @@ unsafe fn run_window(
                 _ => {}
             }
             if msg.hwnd == hwnd && msg.message == dock::SHOW_SPOTLIGHT {
-                show(hwnd, state);
+                show(hwnd, state, dock.as_ref());
                 continue;
             }
             if msg.hwnd == hwnd && msg.message == control_center::OPEN {
@@ -383,10 +442,46 @@ unsafe fn run_window(
                         panel.restore_focus();
                     }
                     center = None;
-                    if !(*state).can_hide && IsWindowVisible(hwnd) == 0 {
+                    if !(*state).can_hide && mission.is_none() && IsWindowVisible(hwnd) == 0 {
                         return Ok(());
                     }
                 }
+                continue;
+            }
+            if msg.hwnd == hwnd && msg.message == mission::OPEN {
+                if let Some(overview) = &mission {
+                    overview.focus();
+                } else {
+                    match Mission::new(
+                        instance,
+                        hwnd,
+                        msg.wParam as HWND,
+                        (*state).palette,
+                        (*state).portuguese,
+                        dock.as_ref().and_then(Dock::inventory),
+                    ) {
+                        Ok(overview) => mission = Some(overview),
+                        Err(error) => report(&format!("Could not open Mission Control ({error})")),
+                    }
+                }
+                continue;
+            }
+            if msg.hwnd == hwnd && msg.message == mission::CLOSE {
+                if mission.as_ref().is_some_and(|overview| {
+                    overview.handle() == msg.wParam as HWND
+                        && (msg.lParam != 0 || overview.handle() != GetForegroundWindow())
+                }) {
+                    mission = None;
+                    if !(*state).can_hide && center.is_none() && IsWindowVisible(hwnd) == 0 {
+                        return Ok(());
+                    }
+                }
+                continue;
+            }
+            if mission
+                .as_ref()
+                .is_some_and(|overview| overview.handle_key(&msg))
+            {
                 continue;
             }
             if center.as_ref().is_some_and(|panel| panel.handle_key(&msg)) {
@@ -396,7 +491,7 @@ unsafe fn run_window(
                 if IsWindowVisible(hwnd) != 0 && GetForegroundWindow() == hwnd {
                     dismiss(hwnd, state, true);
                 } else {
-                    show(hwnd, state);
+                    show(hwnd, state, dock.as_ref());
                 }
                 continue;
             }
@@ -444,13 +539,14 @@ unsafe fn run_window(
     }
 }
 
-unsafe fn show(hwnd: HWND, state: *mut State) {
+unsafe fn show(hwnd: HWND, state: *mut State, dock: Option<&Dock>) {
     unsafe {
         if (*state).apps.is_none() {
             (*state).apps = Some(search::discover(roots()));
         }
         if IsWindowVisible(hwnd) == 0 {
             (*state).previous_foreground = GetForegroundWindow();
+            (*state).desktop = dock.and_then(Dock::inventory);
             refresh(state);
             let foreground = GetForegroundWindow();
             let monitor = if foreground.is_null() {
@@ -665,7 +761,7 @@ unsafe fn fill_windows(state: *mut State, results: HWND, title: &str) {
     unsafe {
         let portuguese = (*state).portuguese;
         if (*state).desktop.is_none() {
-            (*state).desktop = desktop::snapshot().ok();
+            (*state).desktop = desktop::snapshot().ok().map(Rc::new);
         }
         let Some(desktop) = (*state).desktop.as_ref() else {
             add_row(
