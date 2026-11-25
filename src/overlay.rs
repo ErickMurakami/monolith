@@ -4,12 +4,11 @@ use crate::config::Theme;
 use std::mem::size_of;
 use windows_sys::Win32::{
     Foundation::RECT,
-    Graphics::Gdi::{COLOR_BTNFACE, COLOR_HIGHLIGHT, COLOR_WINDOW, COLOR_WINDOWTEXT, GetSysColor},
+    Graphics::Gdi::*,
     UI::{
         Accessibility::{HCF_HIGHCONTRASTON, HIGHCONTRASTW},
-        WindowsAndMessaging::{
-            SPI_GETHIGHCONTRAST, SystemParametersInfoW, WS_EX_TOOLWINDOW, WS_POPUP,
-        },
+        Controls::{DRAWITEMSTRUCT, ODS_DISABLED, ODS_FOCUS, ODS_SELECTED},
+        WindowsAndMessaging::*,
     },
 };
 
@@ -74,6 +73,57 @@ const fn rgb(r: u32, g: u32, b: u32) -> u32 {
 
 pub fn scale(dip: i32, dpi: u32) -> i32 {
     (dip * dpi.max(96) as i32 + 48) / 96
+}
+
+pub unsafe fn fill(hdc: HDC, bounds: &RECT, colour: u32) {
+    unsafe {
+        SetDCBrushColor(hdc, colour);
+        FillRect(hdc, bounds, GetStockObject(DC_BRUSH) as HBRUSH);
+    }
+}
+
+pub unsafe fn paint_button(item: &DRAWITEMSTRUCT, palette: Palette, font: HFONT) {
+    unsafe {
+        let saved = SaveDC(item.hDC);
+        if saved == 0 {
+            return;
+        }
+        let pressed = item.itemState & ODS_SELECTED != 0;
+        let disabled = item.itemState & ODS_DISABLED != 0;
+        let colour = if pressed {
+            palette.pressed
+        } else {
+            palette.surface
+        };
+        fill(item.hDC, &item.rcItem, colour);
+        if !font.is_null() {
+            SelectObject(item.hDC, font);
+        }
+        SetBkMode(item.hDC, TRANSPARENT as i32);
+        SetTextColor(
+            item.hDC,
+            if disabled {
+                GetSysColor(COLOR_GRAYTEXT)
+            } else {
+                palette.text
+            },
+        );
+        let mut title = [0_u16; 64];
+        let count = GetWindowTextW(item.hwndItem, title.as_mut_ptr(), title.len() as i32);
+        let mut bounds = item.rcItem;
+        DrawTextW(
+            item.hDC,
+            title.as_mut_ptr(),
+            count,
+            &mut bounds,
+            DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS,
+        );
+        if item.itemState & ODS_FOCUS != 0 {
+            InflateRect(&mut bounds, -3, -3);
+            DrawFocusRect(item.hDC, &bounds);
+        }
+        RestoreDC(item.hDC, saved);
+    }
 }
 
 pub fn spotlight_bounds(work: RECT, dpi: u32) -> RECT {

@@ -2,10 +2,14 @@
 
 #[cfg(windows)]
 mod artwork;
+#[cfg(windows)]
+mod audio;
 #[cfg(any(windows, test))]
 mod calculator;
 #[cfg(any(windows, test))]
 mod config;
+#[cfg(windows)]
+mod control_center;
 #[cfg(windows)]
 mod desktop;
 #[cfg(windows)]

@@ -1,6 +1,7 @@
 use crate::{
     calculator::{self, CalculationError},
     config::{self, Language},
+    control_center::{self, ControlCenter},
     desktop::{self, ActivationError},
     dock::{self, Dock},
     hotkey::{self, Hotkey, Notice},
@@ -55,6 +56,7 @@ struct SurfaceOptions {
     dock: Option<dock::Settings>,
     top_bar: bool,
     island: bool,
+    control_center: bool,
 }
 
 impl Drop for State {
@@ -198,6 +200,7 @@ pub fn run() -> io::Result<()> {
                 }),
                 top_bar: show_top_bar,
                 island: show_island,
+                control_center: !safe && args.iter().any(|arg| arg == "--control-center"),
             },
         );
         if IsWindow(hwnd) != 0 {
@@ -328,7 +331,18 @@ unsafe fn run_window(
         (*state).can_hide = dock.is_some()
             || top_bar.is_some()
             || ((resident || island.is_some()) && hotkey.available());
-        if !(*state).can_hide {
+        let mut center = if surfaces.control_center {
+            Some(ControlCenter::new(
+                instance,
+                hwnd,
+                null_mut(),
+                (*state).palette,
+                (*state).portuguese,
+            )?)
+        } else {
+            None
+        };
+        if !(*state).can_hide && center.is_none() {
             show(hwnd, state);
         }
 
@@ -341,6 +355,41 @@ unsafe fn run_window(
             }
             if msg.hwnd == hwnd && msg.message == dock::SHOW_SPOTLIGHT {
                 show(hwnd, state);
+                continue;
+            }
+            if msg.hwnd == hwnd && msg.message == control_center::OPEN {
+                if let Some(panel) = &center {
+                    panel.focus();
+                } else {
+                    match ControlCenter::new(
+                        instance,
+                        hwnd,
+                        msg.wParam as HWND,
+                        (*state).palette,
+                        (*state).portuguese,
+                    ) {
+                        Ok(panel) => center = Some(panel),
+                        Err(error) => report(&format!("Could not open Control Center ({error})")),
+                    }
+                }
+                continue;
+            }
+            if msg.hwnd == hwnd && msg.message == control_center::CLOSE {
+                if let Some(panel) = center.as_ref().filter(|panel| {
+                    panel.handle() == msg.wParam as HWND
+                        && (msg.lParam != 0 || panel.handle() != GetForegroundWindow())
+                }) {
+                    if msg.lParam == 1 {
+                        panel.restore_focus();
+                    }
+                    center = None;
+                    if !(*state).can_hide && IsWindowVisible(hwnd) == 0 {
+                        return Ok(());
+                    }
+                }
+                continue;
+            }
+            if center.as_ref().is_some_and(|panel| panel.handle_key(&msg)) {
                 continue;
             }
             if msg.hwnd == hwnd && msg.message == WM_HOTKEY && msg.wParam == hotkey::ID as usize {

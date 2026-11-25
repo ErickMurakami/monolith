@@ -19,9 +19,11 @@ Start a query with `@` to find an open window by its title. Press Enter or doubl
 
 Launch with `--dock` to show the experimental Dock. It floats along the bottom of the selected display and hides when a foreground window enters fullscreen there. Click a window to switch to it, or click its button again while it is active to minimise it. A group opens a native menu for choosing one of its windows. Hover over a running tile to preview its active or first visible window. **Search** opens Spotlight. **Exit** stops Monolith. The Dock shows up to eight pins and window groups depending on available space.
 
-Launch with `--top-bar` to show a borderless status bar on the primary display. It displays the local clock and battery status when Windows reports a battery. Right-click the bar to open Spotlight or exit Monolith. It hides during fullscreen use.
+Launch with `--top-bar` to show a borderless status bar on the primary display. It displays the local clock and battery status when Windows reports a battery. Right-click the bar to open Spotlight, Control Center or exit Monolith. It hides during fullscreen use.
 
 Launch with `--island` to display the title and artist from the current Windows media session. Click the media label to expand the artwork and play, pause, previous and next controls where the source provides them. A progress strip appears when Windows reports a valid timeline. Use `--island --top-bar` to place it in the centre of the status bar. The Island hides during fullscreen use and when Windows has no matching media session.
+
+Launch with `--control-center` or use the Top Bar menu to open a borderless panel. It adjusts volume and mute for the Windows default audio output and shows the battery percentage when available. The settings buttons open the corresponding Windows pages for Wi-Fi, Bluetooth, display, night light, sound devices, focus and power. Use Tab and the arrow keys to navigate and adjust the volume. Escape or a focus change closes the panel.
 
 Monolith tries Win+Space first. If Windows reports that chord is already registered, Monolith registers Ctrl+Alt+Space as its fallback and displays it in the search placeholder. With `--resident`, the registered shortcut opens Spotlight and a second press dismisses it. Escape returns focus to the previous window when Windows permits it. To change the binding, create `%LOCALAPPDATA%\Monolith\config.toml` and restart Monolith.
 
@@ -45,7 +47,7 @@ Invalid settings are preserved on disk and defaults are loaded. Rename the file 
 ## Project status
 
 - Implemented in the experimental build. Native Win32 launcher, local ranking of desktop shortcuts and open windows, calculator, opt-in running-window Dock, configurable shortcut, light and dark themes, and safe start.
-- Planned. Simultaneous per-display Docks, additional Top Bar modules, Control Center, workspaces, Files, indexing, optimisation, Android continuity, installer and release validation.
+- Planned. Simultaneous per-display Docks, additional Top Bar modules, media and Android integrations for Control Center, workspaces, Files, indexing, optimisation, installer and release validation.
 - Unsupported by the current launcher. UWP app discovery, file search, web search and arbitrary command execution.
 
 The UI runs on the Win32 message queue and renders on demand. Spotlight builds its catalog on first use. Search and configuration are independent of Win32, with unit tests for ranking, discovery and recovery.
@@ -61,3 +63,5 @@ See [project status](MONOLITH_STATUS.md) and [benchmark procedure](benchmarks/RE
 ![Cropped Top Bar capture showing system power and clock](docs/top-bar.png)
 
 ![Dynamic Island showing a live local media session and transport controls](docs/island.png)
+
+![Control Center with native volume and links to Windows settings](docs/control-center.png)

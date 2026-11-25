@@ -516,49 +516,6 @@ unsafe fn update_progress(hwnd: HWND, state: *mut State) {
     }
 }
 
-unsafe fn paint_button(item: &DRAWITEMSTRUCT, palette: Palette, font: HFONT) {
-    unsafe {
-        let saved = SaveDC(item.hDC);
-        if saved == 0 {
-            return;
-        }
-        let pressed = item.itemState & ODS_SELECTED != 0;
-        let disabled = item.itemState & ODS_DISABLED != 0;
-        SetDCBrushColor(
-            item.hDC,
-            if pressed {
-                palette.pressed
-            } else {
-                palette.surface
-            },
-        );
-        FillRect(item.hDC, &item.rcItem, GetStockObject(DC_BRUSH) as HBRUSH);
-        if !font.is_null() {
-            SelectObject(item.hDC, font);
-        }
-        SetBkMode(item.hDC, TRANSPARENT as i32);
-        SetTextColor(
-            item.hDC,
-            if disabled {
-                GetSysColor(COLOR_GRAYTEXT)
-            } else {
-                palette.text
-            },
-        );
-        let mut title = [0_u16; 32];
-        let count = GetWindowTextW(item.hwndItem, title.as_mut_ptr(), title.len() as i32);
-        let mut bounds = item.rcItem;
-        DrawTextW(
-            item.hDC,
-            title.as_mut_ptr(),
-            count,
-            &mut bounds,
-            DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
-        );
-        RestoreDC(item.hDC, saved);
-    }
-}
-
 unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     unsafe {
         let state = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut State;
@@ -640,7 +597,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                         artwork.draw(item.hDC, item.rcItem, (*state).palette.background);
                     }
                 } else {
-                    paint_button(item, (*state).palette, (*state).font);
+                    overlay::paint_button(item, (*state).palette, (*state).font);
                 }
                 1
             }

@@ -21,3 +21,4 @@
 - Added a native Dynamic Island for Windows media metadata and transport actions.
 - Added playback progress based on the Windows media timeline.
 - Added artwork loaded on demand from the active Windows media session.
+- Added the borderless Control Center with native volume and mute, battery status and Windows settings shortcuts.

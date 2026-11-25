@@ -1,7 +1,7 @@
 //! Opt-in borderless status overlay with native clock and power data.
 
 use crate::{
-    desktop,
+    control_center, desktop,
     dock::SHOW_SPOTLIGHT,
     overlay::{self, Palette},
     windows::wide,
@@ -300,8 +300,14 @@ pub(crate) unsafe fn menu(hwnd: HWND, launcher: HWND, portuguese: bool) {
             return;
         }
         let search = if portuguese { "Buscar" } else { "Search" };
+        let center = if portuguese {
+            "Central de Controle"
+        } else {
+            "Control Center"
+        };
         let exit = if portuguese { "Sair" } else { "Exit" };
         AppendMenuW(menu, MF_STRING, 1, wide(search).as_ptr());
+        AppendMenuW(menu, MF_STRING, 3, wide(center).as_ptr());
         AppendMenuW(menu, MF_STRING, 2, wide(exit).as_ptr());
         let mut point = POINT::default();
         if GetCursorPos(&mut point) != 0 {
@@ -319,6 +325,8 @@ pub(crate) unsafe fn menu(hwnd: HWND, launcher: HWND, portuguese: bool) {
                 PostMessageW(launcher, SHOW_SPOTLIGHT, 0, 0);
             } else if selected == 2 {
                 PostMessageW(launcher, WM_CLOSE, 0, 0);
+            } else if selected == 3 {
+                PostMessageW(launcher, control_center::OPEN, hwnd as usize, 0);
             }
         }
         DestroyMenu(menu);
