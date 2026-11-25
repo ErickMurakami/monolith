@@ -1,8 +1,9 @@
 use crate::{
     calculator::{self, CalculationError},
-    config::{self, Language, Shortcut, Theme},
+    config::{self, Language, Shortcut},
     desktop::{self, ActivationError},
     dock::{self, Dock},
+    overlay::{self, Palette},
     search::{self, App},
 };
 use std::{
@@ -10,10 +11,7 @@ use std::{
 };
 use windows_sys::Win32::{
     Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
-    Graphics::{
-        Dwm::{DWMWA_USE_IMMERSIVE_DARK_MODE, DwmSetWindowAttribute},
-        Gdi::*,
-    },
+    Graphics::Gdi::*,
     System::LibraryLoader::GetModuleHandleW,
     UI::{
         Controls::{EM_LIMITTEXT, EM_SETCUEBANNER, EM_SETMARGINS, EM_SETSEL},
@@ -28,6 +26,7 @@ const HOTKEY: i32 = 1;
 const EDIT: usize = 100;
 const RESULTS: usize = 101;
 const RESULT_LIMIT: usize = 60;
+const DISMISS_INACTIVE: u32 = WM_APP + 2;
 
 enum Match {
     App(usize),
@@ -41,9 +40,10 @@ struct State {
     edit: HWND,
     results: HWND,
     font: HFONT,
+    font_dpi: u32,
     background: HBRUSH,
     surface: HBRUSH,
-    dark: bool,
+    palette: Palette,
     portuguese: bool,
     can_hide: bool,
 }
@@ -63,15 +63,15 @@ pub(crate) fn wide(value: &str) -> Vec<u16> {
     value.encode_utf16().chain([0]).collect()
 }
 
-pub(crate) fn rgb(r: u32, g: u32, b: u32) -> u32 {
-    r | (g << 8) | (b << 16)
+pub fn report(message: &str) {
+    report_for(null_mut(), message);
 }
 
-pub fn report(message: &str) {
+fn report_for(owner: HWND, message: &str) {
     // Strings remain valid until the modal call returns.
     unsafe {
         MessageBoxW(
-            null_mut(),
+            owner,
             wide(message).as_ptr(),
             wide("Monolith").as_ptr(),
             MB_OK | MB_ICONWARNING,
@@ -121,7 +121,7 @@ pub fn run() -> io::Result<()> {
             return Err(io::Error::last_os_error());
         }
 
-        let dark = matches!(settings.theme, Theme::Dark);
+        let palette = Palette::new(settings.theme);
         let mut state = Box::new(State {
             apps: None,
             desktop: None,
@@ -129,27 +129,20 @@ pub fn run() -> io::Result<()> {
             edit: null_mut(),
             results: null_mut(),
             font: null_mut(),
-            background: CreateSolidBrush(if dark {
-                rgb(8, 10, 13)
-            } else {
-                rgb(241, 243, 246)
-            }),
-            surface: CreateSolidBrush(if dark {
-                rgb(20, 24, 32)
-            } else {
-                rgb(255, 255, 255)
-            }),
-            dark,
+            font_dpi: 0,
+            background: CreateSolidBrush(palette.background),
+            surface: CreateSolidBrush(palette.surface),
+            palette,
             portuguese: matches!(settings.language, Language::Portuguese),
             can_hide: false,
         });
         let hwnd = CreateWindowExW(
-            0,
+            overlay::EX_STYLE | WS_EX_TOPMOST,
             class_name.as_ptr(),
             wide("Monolith").as_ptr(),
-            WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
-            CW_USEDEFAULT,
-            CW_USEDEFAULT,
+            overlay::STYLE | WS_CLIPCHILDREN,
+            0,
+            0,
             540,
             350,
             null_mut(),
@@ -201,13 +194,6 @@ unsafe fn run_window(
     pins: Vec<App>,
 ) -> io::Result<()> {
     unsafe {
-        let dark = i32::from((*state).dark);
-        DwmSetWindowAttribute(
-            hwnd,
-            DWMWA_USE_IMMERSIVE_DARK_MODE as u32,
-            (&raw const dark).cast(),
-            size_of::<i32>() as u32,
-        );
         let edit = CreateWindowExW(
             0,
             wide("EDIT").as_ptr(),
@@ -251,7 +237,7 @@ unsafe fn run_window(
         } else {
             "Search applications"
         };
-        SendMessageW(edit, EM_SETCUEBANNER, 0, wide(cue).as_ptr() as isize);
+        SendMessageW(edit, EM_SETCUEBANNER, 1, wide(cue).as_ptr() as isize);
         SendMessageW(edit, EM_LIMITTEXT, 256, 0);
         layout(hwnd, state);
 
@@ -264,18 +250,20 @@ unsafe fn run_window(
             RegisterHotKey(hwnd, HOTKEY, mods | MOD_NOREPEAT, VK_SPACE.into()) != 0
         });
         if modifiers.is_some() && !registered {
-            SetWindowTextW(
-                hwnd,
+            SendMessageW(
+                edit,
+                EM_SETCUEBANNER,
+                1,
                 wide(if (*state).portuguese {
-                    "Monolith | Atalho indisponivel"
+                    "Buscar aplicativos (atalho indisponível)"
                 } else {
-                    "Monolith | Shortcut unavailable"
+                    "Search applications (shortcut unavailable)"
                 })
-                .as_ptr(),
+                .as_ptr() as isize,
             );
         }
         let dock = if show_dock {
-            match Dock::new(instance, hwnd, (*state).dark, (*state).portuguese, pins) {
+            match Dock::new(instance, hwnd, (*state).palette, (*state).portuguese, pins) {
                 Ok(dock) => Some(dock),
                 Err(error) => {
                     report(&format!("Could not open the Dock ({error})"));
@@ -320,7 +308,11 @@ unsafe fn run_window(
                         continue;
                     }
                     VK_TAB => {
-                        SetFocus(if msg.hwnd == edit { results } else { edit });
+                        SetFocus(if msg.hwnd == edit && IsWindowVisible(results) != 0 {
+                            results
+                        } else {
+                            edit
+                        });
                         continue;
                     }
                     VK_DOWN | VK_UP if msg.hwnd == edit => {
@@ -351,32 +343,44 @@ unsafe fn show(hwnd: HWND, state: *mut State) {
         }
         if IsWindowVisible(hwnd) == 0 {
             refresh(state);
-            let mut cursor = POINT::default();
-            if GetCursorPos(&mut cursor) != 0 {
-                let monitor = MonitorFromPoint(cursor, MONITOR_DEFAULTTONEAREST);
-                let mut info = MONITORINFO {
-                    cbSize: size_of::<MONITORINFO>() as u32,
-                    ..Default::default()
-                };
-                let mut frame = RECT::default();
-                if GetMonitorInfoW(monitor, &mut info) != 0 && GetWindowRect(hwnd, &mut frame) != 0
-                {
-                    let area = info.rcWork;
-                    let width = frame.right - frame.left;
-                    let height = frame.bottom - frame.top;
-                    SetWindowPos(
-                        hwnd,
-                        null_mut(),
-                        area.left + ((area.right - area.left - width) / 2).max(0),
-                        area.top + ((area.bottom - area.top - height) / 2).max(0),
-                        0,
-                        0,
-                        SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOSIZE,
-                    );
-                }
+            let foreground = GetForegroundWindow();
+            let monitor = if foreground.is_null() {
+                let mut cursor = POINT::default();
+                GetCursorPos(&mut cursor);
+                MonitorFromPoint(cursor, MONITOR_DEFAULTTONEAREST)
+            } else {
+                MonitorFromWindow(foreground, MONITOR_DEFAULTTONEAREST)
+            };
+            let mut info = MONITORINFO {
+                cbSize: size_of::<MONITORINFO>() as u32,
+                ..Default::default()
+            };
+            if GetMonitorInfoW(monitor, &mut info) != 0 {
+                // Move the hidden window first so GetDpiForWindow uses the target display.
+                SetWindowPos(
+                    hwnd,
+                    null_mut(),
+                    info.rcWork.left,
+                    info.rcWork.top,
+                    1,
+                    1,
+                    SWP_NOZORDER | SWP_NOACTIVATE,
+                );
+                let bounds = overlay::spotlight_bounds(info.rcWork, GetDpiForWindow(hwnd));
+                SetWindowPos(
+                    hwnd,
+                    null_mut(),
+                    bounds.left,
+                    bounds.top,
+                    bounds.right - bounds.left,
+                    bounds.bottom - bounds.top,
+                    SWP_NOZORDER | SWP_NOACTIVATE,
+                );
+                layout(hwnd, state);
             }
+            fit_results(hwnd, state);
         }
-        ShowWindow(hwnd, SW_RESTORE);
+        ShowWindow(hwnd, SW_SHOW);
         SetForegroundWindow(hwnd);
         SetFocus((*state).edit);
         SendMessageW((*state).edit, EM_SETSEL, 0, -1);
@@ -396,31 +400,34 @@ unsafe fn dismiss(hwnd: HWND, state: *mut State) {
 
 unsafe fn layout(hwnd: HWND, state: *mut State) {
     unsafe {
-        let dpi = GetDpiForWindow(hwnd).max(96) as i32;
-        let scale = |value| value * dpi / 96;
-        let font = CreateFontW(
-            -scale(16),
-            0,
-            0,
-            0,
-            FW_NORMAL as i32,
-            0,
-            0,
-            0,
-            1,
-            0,
-            0,
-            0,
-            0,
-            wide("Segoe UI").as_ptr(),
-        );
+        let dpi = GetDpiForWindow(hwnd);
+        let scale = |value| overlay::scale(value, dpi);
         let edit = (*state).edit;
         let results = (*state).results;
-        if !font.is_null() {
-            SendMessageW(edit, WM_SETFONT, font as usize, 1);
-            SendMessageW(results, WM_SETFONT, font as usize, 1);
-            DeleteObject((*state).font);
-            (*state).font = font;
+        if dpi != (*state).font_dpi {
+            let font = CreateFontW(
+                -scale(16),
+                0,
+                0,
+                0,
+                FW_NORMAL as i32,
+                0,
+                0,
+                0,
+                1,
+                0,
+                0,
+                0,
+                0,
+                wide("Segoe UI").as_ptr(),
+            );
+            if !font.is_null() {
+                SendMessageW(edit, WM_SETFONT, font as usize, 1);
+                SendMessageW(results, WM_SETFONT, font as usize, 1);
+                DeleteObject((*state).font);
+                (*state).font = font;
+                (*state).font_dpi = dpi;
+            }
         }
         let mut area = RECT::default();
         GetClientRect(hwnd, &mut area);
@@ -440,6 +447,51 @@ unsafe fn layout(hwnd: HWND, state: *mut State) {
             3,
             (scale(8) | (scale(8) << 16)) as isize,
         );
+    }
+}
+
+unsafe fn fit_results(hwnd: HWND, state: *mut State) {
+    unsafe {
+        let results = (*state).results;
+        let count = SendMessageW(results, LB_GETCOUNT, 0, 0).clamp(0, 10) as i32;
+        let dpi = GetDpiForWindow(hwnd);
+        let height = if count == 0 {
+            if GetFocus() == results {
+                SetFocus((*state).edit);
+            }
+            ShowWindow(results, SW_HIDE);
+            overlay::scale(61, dpi)
+        } else {
+            ShowWindow(results, SW_SHOWNA);
+            let row = (SendMessageW(results, LB_GETITEMHEIGHT, 0, 0) as i32).max(1);
+            overlay::scale(73, dpi) + count * row
+        };
+        let mut frame = RECT::default();
+        if GetWindowRect(hwnd, &mut frame) == 0 {
+            return;
+        }
+        let monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+        let mut info = MONITORINFO {
+            cbSize: size_of::<MONITORINFO>() as u32,
+            ..Default::default()
+        };
+        let height = if GetMonitorInfoW(monitor, &mut info) != 0 {
+            height.min((info.rcWork.bottom - frame.top).max(1))
+        } else {
+            height
+        };
+        if height != frame.bottom - frame.top {
+            SetWindowPos(
+                hwnd,
+                null_mut(),
+                0,
+                0,
+                frame.right - frame.left,
+                height,
+                SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
+            );
+            layout(hwnd, state);
+        }
     }
 }
 
@@ -480,6 +532,10 @@ unsafe fn refresh(state: *mut State) {
         }
         SendMessageW(results, WM_SETREDRAW, 1, 0);
         InvalidateRect(results, std::ptr::null(), 1);
+        let hwnd = GetParent((*state).edit);
+        if IsWindowVisible(hwnd) != 0 {
+            fit_results(hwnd, state);
+        }
     }
 }
 
@@ -585,10 +641,10 @@ pub(crate) unsafe fn launch_shortcut(hwnd: HWND, path: &std::path::Path) {
             SW_SHOWNORMAL,
         );
         if result as isize <= 32 {
-            report(&format!(
-                "Windows could not open the shortcut ({})",
-                result as isize
-            ));
+            report_for(
+                hwnd,
+                &format!("Windows could not open the shortcut ({})", result as isize),
+            );
         }
     }
 }
@@ -616,7 +672,7 @@ unsafe fn switch_window(hwnd: HWND, state: *mut State, index: usize) {
                         "O Windows não conseguiu ativar esta janela."
                     }
                 };
-                report(message);
+                report_for(hwnd, message);
             }
         }
     }
@@ -632,6 +688,20 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                 0
             }
             _ if state.is_null() => DefWindowProcW(hwnd, msg, wp, lp),
+            WM_ACTIVATE if wp & 0xffff == WA_INACTIVE as usize => {
+                PostMessageW(hwnd, DISMISS_INACTIVE, 0, 0);
+                0
+            }
+            DISMISS_INACTIVE => {
+                let foreground = GetForegroundWindow();
+                if IsWindowVisible(hwnd) != 0
+                    && foreground != hwnd
+                    && GetAncestor(foreground, GA_ROOTOWNER) != hwnd
+                {
+                    dismiss(hwnd, state);
+                }
+                0
+            }
             WM_DPICHANGED => {
                 let rect = &*(lp as *const RECT);
                 SetWindowPos(
@@ -653,22 +723,8 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                 1
             }
             WM_CTLCOLOREDIT | WM_CTLCOLORLISTBOX => {
-                SetBkColor(
-                    wp as HDC,
-                    if (*state).dark {
-                        rgb(20, 24, 32)
-                    } else {
-                        rgb(255, 255, 255)
-                    },
-                );
-                SetTextColor(
-                    wp as HDC,
-                    if (*state).dark {
-                        rgb(229, 231, 235)
-                    } else {
-                        rgb(24, 28, 34)
-                    },
-                );
+                SetBkColor(wp as HDC, (*state).palette.surface);
+                SetTextColor(wp as HDC, (*state).palette.text);
                 (*state).surface as isize
             }
             WM_COMMAND => {

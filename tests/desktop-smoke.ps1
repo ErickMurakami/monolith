@@ -1,7 +1,9 @@
 param(
     [string]$Binary = (Join-Path $PSScriptRoot '../target/release/monolith.exe'),
     [switch]$Dock,
-    [switch]$Pins
+    [switch]$Pins,
+    [switch]$Spotlight,
+    [string]$Capture
 )
 
 $ErrorActionPreference = 'Stop'
@@ -17,6 +19,7 @@ public static class DesktopSmoke {
     [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr hwnd);
     [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hwnd);
     [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint process);
+    [DllImport("user32.dll", EntryPoint="GetWindowLongW")] public static extern int Style(IntPtr hwnd, int index);
     [DllImport("user32.dll", CharSet=CharSet.Unicode)]
     public static extern IntPtr FindWindowEx(IntPtr parent, IntPtr after, string cls, string title);
     public static IntPtr FindClass(string cls) { return FindWindowEx(IntPtr.Zero, IntPtr.Zero, cls, null); }
@@ -43,9 +46,12 @@ public static class DesktopSmoke {
     [DllImport("user32.dll")] static extern IntPtr WindowFromPoint(Point point);
     [DllImport("user32.dll")] static extern uint SendInput(uint count, Input[] events, int size);
     public static int Left(IntPtr target) {
+        return Bounds(target)[0];
+    }
+    public static int[] Bounds(IntPtr target) {
         Rect bounds;
         if (!GetWindowRect(target, out bounds)) throw new InvalidOperationException("Window bounds unavailable.");
-        return bounds.Left;
+        return new[] { bounds.Left, bounds.Top, bounds.Right, bounds.Bottom };
     }
 
     // Only click a known test surface if it is unobstructed.
@@ -104,6 +110,64 @@ function Focus-Fixture($Form) {
         [DesktopSmoke]::GetForegroundWindow() -eq $Form.Handle
     } 'Fixture could not receive foreground focus.'
     $Form.TopMost = $false
+}
+
+function Invoke-SpotlightSmoke($Application) {
+    $fixture = New-Object Windows.Forms.Form
+    $launcher = $null
+    try {
+        $fixture.Text = 'Spotlight verification'
+        $fixture.Show()
+        Focus-Fixture $fixture
+        $display = [Windows.Forms.Screen]::FromHandle($fixture.Handle).WorkingArea
+        foreach ($dismissal in 'focus','escape') {
+            $launcher = Start-Process -FilePath $Application -ArgumentList '--safe-mode' -PassThru
+            Wait-Until {
+                $launcher.Refresh()
+                [DesktopSmoke]::IsWindowVisible($launcher.MainWindowHandle)
+            } 'Spotlight did not open.'
+            $window = $launcher.MainWindowHandle
+            $style = [DesktopSmoke]::Style($window, -16)
+            $extended = [DesktopSmoke]::Style($window, -20)
+            if (($style -band 0x00CF0000) -or !($extended -band 0x80) -or ($extended -band 0x40000)) {
+                throw 'Spotlight has a caption, resize controls or application-window styles.'
+            }
+            $bounds = [DesktopSmoke]::Bounds($window)
+            if ([Math]::Abs(($bounds[0] + $bounds[2]) - ($display.Left + $display.Right)) -gt 2 -or
+                $bounds[1] -lt $display.Top -or $bounds[1] -gt ($display.Top + $display.Height / 3)) {
+                throw 'Spotlight did not open centred in the upper part of the active display.'
+            }
+            $edit = [DesktopSmoke]::FindWindowEx($window, [IntPtr]::Zero, 'Edit', '')
+            $list = [DesktopSmoke]::FindWindowEx($window, [IntPtr]::Zero, 'ListBox', '')
+            if ([DesktopSmoke]::GetForegroundWindow() -ne $window) {
+                if (![DesktopSmoke]::Click($edit)) { throw 'Could not focus the Spotlight search field.' }
+                Wait-Until { [DesktopSmoke]::GetForegroundWindow() -eq $window } 'Spotlight did not take focus.'
+            }
+            [void][DesktopSmoke]::Write($edit, 0xC, [UIntPtr]::Zero, '=(12 + 3) / 2')
+            if (@(Get-Rows $list) -ne '7.5') { throw 'Calculation result changed.' }
+            if ($Capture -and $dismissal -eq 'focus') {
+                Add-Type -AssemblyName System.Drawing
+                Start-Sleep -Milliseconds 100
+                $bounds = [DesktopSmoke]::Bounds($window)
+                $image = [Drawing.Bitmap]::new(($bounds[2]-$bounds[0]-4), ($bounds[3]-$bounds[1]-4))
+                $graphics = [Drawing.Graphics]::FromImage($image)
+                try {
+                    $graphics.CopyFromScreen(($bounds[0]+2), ($bounds[1]+2), 0, 0, $image.Size)
+                    $image.Save([IO.Path]::GetFullPath($Capture))
+                } finally {
+                    $graphics.Dispose()
+                    $image.Dispose()
+                }
+            }
+            if ($dismissal -eq 'focus') { Focus-Fixture $fixture }
+            else { [void][DesktopSmoke]::Post($edit, 0x100, [UIntPtr]::new([uint32]27), [IntPtr]::Zero) }
+            Wait-Until { $launcher.HasExited } "Spotlight did not dismiss on $dismissal."
+        }
+        'Spotlight borderless styles, placement, calculation, Escape and focus-loss dismissal passed.'
+    } finally {
+        if ($launcher -and !$launcher.HasExited) { [void]$launcher.CloseMainWindow() }
+        $fixture.Dispose()
+    }
 }
 
 function Invoke-PinSmoke($Application) {
@@ -251,9 +315,10 @@ function Invoke-DockSmoke($Application) {
 }
 
 $originalDpi = [DesktopSmoke]::SetThreadDpiAwarenessContext([IntPtr]::new(-4))
-if ($Dock -or $Pins) {
+if ($Dock -or $Pins -or $Spotlight) {
     try {
         if ($Pins) { Invoke-PinSmoke (Resolve-Path $Binary) }
+        elseif ($Spotlight) { Invoke-SpotlightSmoke (Resolve-Path $Binary) }
         else { Invoke-DockSmoke (Resolve-Path $Binary) }
     } finally {
         if ($originalDpi -ne [IntPtr]::Zero) {
@@ -297,6 +362,10 @@ try {
     $edit = [DesktopSmoke]::FindWindowEx($window, [IntPtr]::Zero, 'Edit', $null)
     $list = [DesktopSmoke]::FindWindowEx($window, [IntPtr]::Zero, 'ListBox', $null)
     if ($edit -eq [IntPtr]::Zero -or $list -eq [IntPtr]::Zero) { throw 'Spotlight controls were not found.' }
+    if ([DesktopSmoke]::GetForegroundWindow() -ne $window) {
+        if (![DesktopSmoke]::Click($edit)) { throw 'Could not focus the Spotlight search field.' }
+        Wait-Until { [DesktopSmoke]::GetForegroundWindow() -eq $window } 'Spotlight did not take focus.'
+    }
 
     [void][DesktopSmoke]::Write($edit, 0xC, [UIntPtr]::Zero, "@$prefix")
     $rows = @(Get-Rows $list)

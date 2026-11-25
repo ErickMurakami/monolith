@@ -2,8 +2,9 @@
 
 use crate::{
     desktop::{self, Window},
+    overlay::{self, Palette},
     search::App,
-    windows::{launch_shortcut, rgb, wide},
+    windows::{launch_shortcut, wide},
 };
 use std::{cell::Cell, ffi::c_void, io, mem::size_of, ptr::null_mut};
 use windows_sys::Win32::{
@@ -39,7 +40,7 @@ struct State {
     brush: HBRUSH,
     font: HFONT,
     dpi: u32,
-    dark: bool,
+    palette: Palette,
     portuguese: bool,
 }
 
@@ -47,7 +48,7 @@ impl Dock {
     pub fn new(
         instance: *mut c_void,
         launcher: HWND,
-        dark: bool,
+        palette: Palette,
         portuguese: bool,
         pins: Vec<App>,
     ) -> io::Result<Self> {
@@ -65,10 +66,10 @@ impl Dock {
                 return Err(io::Error::last_os_error());
             }
             let handle = CreateWindowExW(
-                WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE,
+                overlay::EX_STYLE | WS_EX_TOPMOST | WS_EX_NOACTIVATE,
                 class_name.as_ptr(),
                 wide("Monolith Dock").as_ptr(),
-                WS_POPUP | WS_CLIPCHILDREN,
+                overlay::STYLE | WS_CLIPCHILDREN,
                 0,
                 0,
                 0,
@@ -90,14 +91,10 @@ impl Dock {
                     windows: Vec::new(),
                     pins,
                     visible_pins: 0,
-                    brush: CreateSolidBrush(if dark {
-                        rgb(8, 10, 13)
-                    } else {
-                        rgb(241, 243, 246)
-                    }),
+                    brush: CreateSolidBrush(palette.background),
                     font: null_mut(),
                     dpi: 0,
-                    dark,
+                    palette,
                     portuguese,
                 }),
             };
@@ -230,7 +227,7 @@ unsafe fn refresh(hwnd: HWND, state: *mut State) {
         }
 
         let dpi = GetDpiForWindow(hwnd).max(96);
-        let scale = |value: i32| value * dpi as i32 / 96;
+        let scale = |value| overlay::scale(value, dpi);
         if (*state).dpi != dpi {
             let font = CreateFontW(
                 -scale(13),
@@ -328,7 +325,7 @@ unsafe fn refresh(hwnd: HWND, state: *mut State) {
 
 unsafe fn draw(state: *mut State, item: &DRAWITEMSTRUCT) {
     unsafe {
-        let dark = (*state).dark;
+        let palette = (*state).palette;
         let area = item.rcItem;
         let pressed = item.itemState & ODS_SELECTED != 0;
         let saved = SaveDC(item.hDC);
@@ -337,11 +334,10 @@ unsafe fn draw(state: *mut State, item: &DRAWITEMSTRUCT) {
         }
         SetDCBrushColor(
             item.hDC,
-            match (dark, pressed) {
-                (true, false) => rgb(20, 24, 32),
-                (true, true) => rgb(32, 36, 44),
-                (false, false) => rgb(255, 255, 255),
-                (false, true) => rgb(224, 229, 235),
+            if pressed {
+                palette.pressed
+            } else {
+                palette.surface
             },
         );
         let brush = GetStockObject(DC_BRUSH) as HBRUSH;
@@ -352,14 +348,7 @@ unsafe fn draw(state: *mut State, item: &DRAWITEMSTRUCT) {
             SelectObject(item.hDC, font);
         }
         SetBkMode(item.hDC, TRANSPARENT as i32);
-        SetTextColor(
-            item.hDC,
-            if dark {
-                rgb(229, 231, 235)
-            } else {
-                rgb(24, 28, 34)
-            },
-        );
+        SetTextColor(item.hDC, palette.text);
         let mut title = [0_u16; 513];
         let length = GetWindowTextW(item.hwndItem, title.as_mut_ptr(), title.len() as i32);
         let mut text_area = RECT {
@@ -389,7 +378,7 @@ unsafe fn draw(state: *mut State, item: &DRAWITEMSTRUCT) {
                 top: area.bottom - 2,
                 bottom: area.bottom,
             };
-            SetDCBrushColor(item.hDC, rgb(41, 121, 255));
+            SetDCBrushColor(item.hDC, palette.accent);
             FillRect(item.hDC, &indicator, brush);
         }
         RestoreDC(item.hDC, saved);

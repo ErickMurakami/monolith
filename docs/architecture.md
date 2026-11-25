@@ -12,7 +12,7 @@ The launcher is the first vertical slice. The application exits by default and h
 
 ## Design
 
-The dark theme uses #080A0D for the background, #141820 for controls and #E5E7EB for foreground text. The light theme uses #F1F3F6, #FFFFFF and #181C22. The system draws the non-client frame and selection highlight, respecting its native colour choices. Controls use Segoe UI. Layout spacing scales with the monitor DPI context. The current interface uses opaque surfaces and has no animation loop.
+`overlay` defines shared borderless Win32 styles, palette and DPI geometry. Its dark theme uses #080A0D for the background, #141820 for controls and #E5E7EB for foreground text. The light theme uses #F1F3F6, #FFFFFF and #181C22. When Windows high contrast is enabled at launch, overlays read system colours. Spotlight retains native edit and list controls with the system selection highlight. Overlay controls use Segoe UI and opaque surfaces.
 
 ## Next product milestones
 

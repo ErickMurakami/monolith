@@ -11,7 +11,7 @@ cargo build --locked --release
 .\target\release\monolith.exe
 ```
 
-Type an application name, use the arrow keys to select a match, and press Enter or double-click to open it. Escape closes the default session. Pass `--resident` to keep the launcher available after Escape when its global shortcut registered successfully. Close its window to quit. Use `--safe-mode` to start with defaults and the global shortcut disabled.
+Spotlight opens as a compact, borderless overlay centred near the top of the active display. Type an application name, use the arrow keys to select a match, and press Enter or double-click to open it. Escape or a focus change dismisses Spotlight. Pass `--resident` to keep the launcher available after dismissal when its global shortcut registered successfully. Use `--safe-mode` to start with defaults and the global shortcut disabled.
 
 Start a query with `=` to calculate locally. Try `=(12 + 3) / 2`. The calculator supports decimal numbers with a decimal point, parentheses, addition, subtraction, multiplication and division.
 
@@ -19,7 +19,7 @@ Start a query with `@` to find an open window by its title. Press Enter or doubl
 
 Launch with `--dock` to show the experimental Dock. It floats above the primary display's work area and hides when a foreground window enters fullscreen on that display. Click a window to switch to it, or click its button again while it is active to minimise it. **Search** opens Spotlight. **Exit** stops Monolith. The Dock shows up to eight windows depending on available space. Spotlight provides title search for the wider list.
 
-Monolith attempts to register Win+Space. Windows can reserve that combination. If it is unavailable, the window stays accessible and reports the conflict in its title. To change the binding, create `%LOCALAPPDATA%\Monolith\config.toml` and restart Monolith.
+Monolith attempts to register Win+Space. If Windows reserves that combination, the search field identifies the conflict in its placeholder and the launcher remains accessible. To change the binding, create `%LOCALAPPDATA%\Monolith\config.toml` and restart Monolith.
 
 ```toml
 theme = "dark"              # dark, light
@@ -45,6 +45,6 @@ See [architecture](docs/architecture.md) for the implementation boundaries and r
 
 See [project status](MONOLITH_STATUS.md) and [benchmark procedure](benchmarks/README.md).
 
-![Spotlight running on Windows with a verification shortcut](docs/spotlight.png)
+![Borderless Spotlight showing a calculation on Windows](docs/spotlight.png)
 
 ![Cropped Dock capture showing Search and an active verification window](docs/dock.png)

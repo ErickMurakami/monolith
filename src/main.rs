@@ -8,6 +8,8 @@ mod config;
 mod desktop;
 #[cfg(windows)]
 mod dock;
+#[cfg(windows)]
+mod overlay;
 #[cfg(any(windows, test))]
 mod search;
 #[cfg(windows)]
