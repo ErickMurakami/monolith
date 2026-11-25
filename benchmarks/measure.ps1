@@ -1,7 +1,7 @@
 param(
     [ValidateRange(2, 120)][int]$Samples = 6,
     [ValidateRange(1, 30)][int]$IntervalSeconds = 2,
-    [ValidateSet('baseline', 'launcher', 'resident')][string]$Scenario = 'baseline',
+    [ValidateSet('baseline', 'launcher', 'resident', 'dock')][string]$Scenario = 'baseline',
     [string]$Output = 'artifacts/benchmark.json'
 )
 
@@ -12,7 +12,7 @@ $windows = Get-ItemProperty 'HKLM:/SOFTWARE/Microsoft/Windows NT/CurrentVersion'
 $samplesTaken = for ($i = 0; $i -lt $Samples; $i++) {
     $memory = Get-CimInstance Win32_PerfFormattedData_PerfOS_Memory
     $processor = Get-CimInstance Win32_PerfFormattedData_PerfOS_Processor -Filter "Name='_Total'"
-    $app = @(Get-CimInstance Win32_PerfFormattedData_PerfProc_Process -Filter "Name LIKE 'monolith%'")
+    $app = @(Get-CimInstance Win32_PerfFormattedData_PerfProc_Process -Filter "Name='monolith' OR Name LIKE 'monolith#%'")
     if ($Scenario -eq 'baseline' -and $app.Count) { throw 'Close Monolith before collecting the baseline.' }
     if ($Scenario -ne 'baseline' -and !$app.Count) { throw 'Start Monolith before collecting this scenario.' }
     [ordered]@{

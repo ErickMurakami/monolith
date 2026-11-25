@@ -1,11 +1,12 @@
 # Benchmarks
 
-Run from a native PowerShell terminal at the repository root. Close Monolith and gather the baseline. Launch the release binary, then measure with the launcher visible. For a resident measurement, start with `--resident`, confirm that the shortcut works, and hide the launcher with Escape.
+Run from a native PowerShell terminal at the repository root. Close Monolith and gather the baseline. Launch the release binary, then measure with the launcher visible. For a resident measurement, start with `--resident`, confirm that the shortcut works, and hide the launcher with Escape. For a Dock measurement, launch with `--dock` and leave Spotlight hidden.
 
 ```powershell
 .\benchmarks\measure.ps1 -Scenario baseline -Output artifacts/baseline.json
 .\benchmarks\measure.ps1 -Scenario launcher -Output artifacts/launcher.json
 .\benchmarks\measure.ps1 -Scenario resident -Output artifacts/resident.json
+.\benchmarks\measure.ps1 -Scenario dock -Output artifacts/dock.json
 ```
 
 Keep the foreground workload, power plan and background applications consistent across runs. Repeat each scenario and report the range. Record context beside the local outputs. Datasets are ignored by Git.

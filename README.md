@@ -17,20 +17,23 @@ Start a query with `=` to calculate locally. Try `=(12 + 3) / 2`. The calculator
 
 Start a query with `@` to find an open window by its title. Press Enter or double-click to switch to it, restoring it first if it is minimised. Press F5 to refresh the list. The window search uses desktop windows exposed by Windows, including packaged applications when they have an eligible desktop window.
 
+Launch with `--dock` to show the experimental Dock. It floats above the primary display's work area and hides when a foreground window enters fullscreen on that display. Click a window to switch to it, or click its button again while it is active to minimise it. **Search** opens Spotlight. **Exit** stops Monolith. The Dock shows up to eight windows depending on available space. Spotlight provides title search for the wider list.
+
 Monolith attempts to register Win+Space. Windows can reserve that combination. If it is unavailable, the window stays accessible and reports the conflict in its title. To change the binding, create `%LOCALAPPDATA%\Monolith\config.toml` and restart Monolith.
 
 ```toml
 theme = "dark"              # dark, light
 language = "english"        # english, portuguese
 shortcut = "ctrl-alt-space" # win-space, ctrl-alt-space, disabled
+dock = false               # set true to opt in
 ```
 
 Invalid settings are preserved on disk and defaults are loaded. Rename the file to restore defaults on the next start.
 
 ## Project status
 
-- Implemented in the experimental build. Native Win32 launcher, local ranking of desktop shortcuts and open windows, calculator, configurable shortcut, light and dark themes, and safe start.
-- Planned. Dock, Top Bar, media Island, workspaces, Files, indexing, optimisation, Android continuity, installer and release validation.
+- Implemented in the experimental build. Native Win32 launcher, local ranking of desktop shortcuts and open windows, calculator, opt-in running-window Dock, configurable shortcut, light and dark themes, and safe start.
+- Planned. Dock pins, grouping, previews, per-display placement, Top Bar, media Island, workspaces, Files, indexing, optimisation, Android continuity, installer and release validation.
 - Unsupported by the current launcher. UWP app discovery, file search, web search and arbitrary command execution.
 
 The UI runs on the Win32 message queue and renders on demand. Spotlight builds its catalog on first use. Search and configuration are independent of Win32, with unit tests for ranking, discovery and recovery.
@@ -40,3 +43,5 @@ See [architecture](docs/architecture.md) for the implementation boundaries and r
 See [project status](MONOLITH_STATUS.md) and [benchmark procedure](benchmarks/README.md).
 
 ![Spotlight running on Windows with a verification shortcut](docs/spotlight.png)
+
+![Cropped Dock capture showing Search and an active verification window](docs/dock.png)

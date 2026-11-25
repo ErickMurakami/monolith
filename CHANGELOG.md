@@ -8,3 +8,4 @@
 - Added reproducible Windows and launcher performance sampling.
 - Added local arithmetic in Spotlight, with precedence and input error handling.
 - Added title search and switching for open windows, with monitor and fullscreen detection.
+- Added an opt-in native Dock with live window titles, minimisation, restoration and fullscreen suppression.

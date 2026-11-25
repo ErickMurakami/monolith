@@ -2,6 +2,7 @@ use crate::{
     calculator::{self, CalculationError},
     config::{self, Language, Shortcut, Theme},
     desktop::{self, ActivationError},
+    dock::{self, Dock},
     search::{self, App},
 };
 use std::{
@@ -58,11 +59,11 @@ impl Drop for State {
     }
 }
 
-fn wide(value: &str) -> Vec<u16> {
+pub(crate) fn wide(value: &str) -> Vec<u16> {
     value.encode_utf16().chain([0]).collect()
 }
 
-fn rgb(r: u32, g: u32, b: u32) -> u32 {
+pub(crate) fn rgb(r: u32, g: u32, b: u32) -> u32 {
     r | (g << 8) | (b << 16)
 }
 
@@ -163,7 +164,15 @@ pub fn run() -> io::Result<()> {
         // dispatch messages that can re-enter a state-reading branch.
         let state_ptr = Box::into_raw(state);
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, state_ptr as isize);
-        let result = run_window(hwnd, instance, state_ptr, settings.shortcut, resident);
+        let show_dock = !safe && (settings.dock || args.iter().any(|arg| arg == "--dock"));
+        let result = run_window(
+            hwnd,
+            instance,
+            state_ptr,
+            settings.shortcut,
+            resident,
+            show_dock,
+        );
         if IsWindow(hwnd) != 0 {
             DestroyWindow(hwnd);
         }
@@ -179,6 +188,7 @@ unsafe fn run_window(
     state: *mut State,
     shortcut: Shortcut,
     resident: bool,
+    show_dock: bool,
 ) -> io::Result<()> {
     unsafe {
         let dark = i32::from((*state).dark);
@@ -254,7 +264,18 @@ unsafe fn run_window(
                 .as_ptr(),
             );
         }
-        (*state).can_hide = resident && registered;
+        let dock = if show_dock {
+            match Dock::new(instance, hwnd, (*state).dark, (*state).portuguese) {
+                Ok(dock) => Some(dock),
+                Err(error) => {
+                    report(&format!("Could not open the Dock ({error})"));
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        (*state).can_hide = dock.is_some() || (resident && registered);
         if !(*state).can_hide {
             show(hwnd, state);
         }
@@ -266,7 +287,10 @@ unsafe fn run_window(
                 0 => return Ok(()),
                 _ => {}
             }
-            if msg.message == WM_HOTKEY && msg.wParam == HOTKEY as usize {
+            if msg.hwnd == hwnd
+                && (msg.message == dock::SHOW_SPOTLIGHT
+                    || (msg.message == WM_HOTKEY && msg.wParam == HOTKEY as usize))
+            {
                 show(hwnd, state);
                 continue;
             }
@@ -561,7 +585,8 @@ unsafe fn switch_window(hwnd: HWND, state: *mut State, index: usize) {
         else {
             return;
         };
-        match window.activate() {
+        let target = window.target;
+        match target.activate() {
             Ok(()) => dismiss(hwnd, state),
             Err(error) => {
                 (*state).desktop = None;

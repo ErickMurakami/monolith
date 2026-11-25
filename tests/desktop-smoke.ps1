@@ -1,5 +1,6 @@
 param(
-    [string]$Binary = (Join-Path $PSScriptRoot '../target/release/monolith.exe')
+    [string]$Binary = (Join-Path $PSScriptRoot '../target/release/monolith.exe'),
+    [switch]$Dock
 )
 
 $ErrorActionPreference = 'Stop'
@@ -11,9 +12,13 @@ using System.Runtime.InteropServices;
 public static class DesktopSmoke {
     [DllImport("user32.dll")] public static extern IntPtr SetThreadDpiAwarenessContext(IntPtr context);
     [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hwnd);
     [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr hwnd);
+    [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hwnd);
+    [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint process);
     [DllImport("user32.dll", CharSet=CharSet.Unicode)]
     public static extern IntPtr FindWindowEx(IntPtr parent, IntPtr after, string cls, string title);
+    public static IntPtr FindClass(string cls) { return FindWindowEx(IntPtr.Zero, IntPtr.Zero, cls, null); }
     [DllImport("user32.dll", EntryPoint="SendMessageW", CharSet=CharSet.Unicode)]
     public static extern IntPtr Write(IntPtr hwnd, uint message, UIntPtr value, string text);
     [DllImport("user32.dll", EntryPoint="SendMessageW", CharSet=CharSet.Unicode)]
@@ -22,6 +27,44 @@ public static class DesktopSmoke {
     public static extern IntPtr Send(IntPtr hwnd, uint message, UIntPtr value, IntPtr data);
     [DllImport("user32.dll", EntryPoint="PostMessageW")]
     public static extern bool Post(IntPtr hwnd, uint message, UIntPtr value, IntPtr data);
+
+    [StructLayout(LayoutKind.Sequential)] struct Point { public int X, Y; }
+    [StructLayout(LayoutKind.Sequential)] struct Rect { public int Left, Top, Right, Bottom; }
+    [StructLayout(LayoutKind.Sequential)] struct MouseInput {
+        public int X, Y;
+        public uint Data, Flags, Time;
+        public UIntPtr ExtraInfo;
+    }
+    [StructLayout(LayoutKind.Sequential)] struct Input { public uint Type; public MouseInput Mouse; }
+    [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr hwnd, out Rect rect);
+    [DllImport("user32.dll")] static extern bool GetCursorPos(out Point point);
+    [DllImport("user32.dll")] static extern bool SetCursorPos(int x, int y);
+    [DllImport("user32.dll")] static extern IntPtr WindowFromPoint(Point point);
+    [DllImport("user32.dll")] static extern uint SendInput(uint count, Input[] events, int size);
+
+    // Only click a known test surface if it is unobstructed.
+    public static bool Click(IntPtr target) {
+        Rect bounds;
+        Point original;
+        if (target == IntPtr.Zero || !GetWindowRect(target, out bounds) || !GetCursorPos(out original))
+            return false;
+        var point = new Point { X = (bounds.Left + bounds.Right) / 2, Y = (bounds.Top + bounds.Bottom) / 2 };
+        if (WindowFromPoint(point) != target || !SetCursorPos(point.X, point.Y))
+            return false;
+        try {
+            if (WindowFromPoint(point) != target)
+                return false;
+            var events = new[] {
+                new Input { Mouse = new MouseInput { Flags = 0x0002 } },
+                new Input { Mouse = new MouseInput { Flags = 0x0004 } },
+            };
+            return SendInput(2, events, Marshal.SizeOf(typeof(Input))) == 2;
+        } finally {
+            Point current;
+            if (GetCursorPos(out current) && current.X == point.X && current.Y == point.Y)
+                SetCursorPos(original.X, original.Y);
+        }
+    }
 }
 "@
 
@@ -44,7 +87,116 @@ function Get-Rows($List) {
     }
 }
 
+function Focus-Fixture($Form) {
+    [void][DesktopSmoke]::SetForegroundWindow($Form.Handle)
+    if ([DesktopSmoke]::GetForegroundWindow() -ne $Form.Handle) {
+        $Form.TopMost = $true
+        [Windows.Forms.Application]::DoEvents()
+        if (![DesktopSmoke]::Click($Form.Handle)) { throw 'The fixture is obscured or input is unavailable.' }
+    }
+    Wait-Until {
+        [DesktopSmoke]::GetForegroundWindow() -eq $Form.Handle
+    } 'Fixture could not receive foreground focus.'
+    $Form.TopMost = $false
+}
+
+function Invoke-DockSmoke($Application) {
+    if ([DesktopSmoke]::FindClass('MonolithDock') -ne [IntPtr]::Zero) {
+        throw 'Close the running Monolith Dock before this smoke test.'
+    }
+    $prefix = '!' + [guid]::NewGuid().ToString('N').Substring(0, 10)
+    $target = New-Object Windows.Forms.Form
+    $fullscreen = New-Object Windows.Forms.Form
+    $launcher = $null
+    $dockWindow = [IntPtr]::Zero
+    $localData = $env:LOCALAPPDATA
+    try {
+        $env:LOCALAPPDATA = Join-Path ([IO.Path]::GetTempPath()) ([guid]::NewGuid().ToString('N'))
+        $target.Text = "$prefix window"
+        $target.Show()
+        Focus-Fixture $target
+        $launcher = Start-Process -FilePath $Application -ArgumentList '--dock' -PassThru
+        Wait-Until {
+            [DesktopSmoke]::IsWindowVisible([DesktopSmoke]::FindClass('MonolithDock'))
+        } 'Dock did not appear.'
+        $dockWindow = [DesktopSmoke]::FindClass('MonolithDock')
+        $ownerId = [uint32]0
+        [void][DesktopSmoke]::GetWindowThreadProcessId($dockWindow, [ref]$ownerId)
+        if ($ownerId -ne $launcher.Id) { throw 'Unexpected Dock process.' }
+        if ([DesktopSmoke]::GetForegroundWindow() -ne $target.Handle) {
+            throw 'The Dock took foreground focus.'
+        }
+        $tile = [DesktopSmoke]::FindWindowEx($dockWindow, [IntPtr]::Zero, 'Button', $target.Text)
+        if ($tile -eq [IntPtr]::Zero) { throw 'The visible fixture window is missing from the Dock.' }
+        if (![DesktopSmoke]::Click($tile)) { throw 'The active Dock button could not be clicked.' }
+        Wait-Until { [DesktopSmoke]::IsIconic($target.Handle) } 'Clicking the active window did not minimise it.'
+
+        $fullscreen.Text = "$prefix fullscreen"
+        $fullscreen.FormBorderStyle = 'None'
+        $fullscreen.StartPosition = 'Manual'
+        $fullscreen.Bounds = [Windows.Forms.Screen]::PrimaryScreen.Bounds
+        $fullscreen.Show()
+        Focus-Fixture $fullscreen
+        Wait-Until { ![DesktopSmoke]::IsWindowVisible($dockWindow) } 'The Dock did not hide for fullscreen.'
+        $fullscreen.SetBounds(40, 40, 640, 420)
+        Wait-Until { [DesktopSmoke]::IsWindowVisible($dockWindow) } 'The Dock did not return after exiting fullscreen.'
+
+        $tile = [DesktopSmoke]::FindWindowEx($dockWindow, [IntPtr]::Zero, 'Button', $target.Text)
+        if (![DesktopSmoke]::Click($tile)) { throw 'The minimised Dock button could not be clicked.' }
+        Wait-Until {
+            ![DesktopSmoke]::IsIconic($target.Handle) -and
+            [DesktopSmoke]::GetForegroundWindow() -eq $target.Handle
+        } 'Clicking a minimised window did not restore and activate it.'
+
+        $target.Text = "$prefix renamed"
+        Wait-Until {
+            [DesktopSmoke]::FindWindowEx($dockWindow, [IntPtr]::Zero, 'Button', $target.Text) -ne [IntPtr]::Zero
+        } 'The Dock did not reflect the window title change.'
+        $search = [DesktopSmoke]::FindWindowEx($dockWindow, [IntPtr]::Zero, 'Button', 'Search')
+        if (![DesktopSmoke]::Click($search)) { throw 'Search could not be clicked.' }
+        Wait-Until {
+            [DesktopSmoke]::IsWindowVisible([DesktopSmoke]::FindClass('MonolithSpotlight'))
+        } 'Search did not open Spotlight.'
+        $exit = [DesktopSmoke]::FindWindowEx($dockWindow, [IntPtr]::Zero, 'Button', 'Exit')
+        if (![DesktopSmoke]::Click($exit)) { throw 'Exit could not be clicked.' }
+        Wait-Until { $launcher.HasExited } 'Exit did not stop the process.'
+
+        $dockWindow = [IntPtr]::Zero
+        $launcher = Start-Process -FilePath $Application -ArgumentList '--dock', '--safe-mode' -PassThru
+        Wait-Until {
+            $launcher.Refresh()
+            [DesktopSmoke]::IsWindowVisible($launcher.MainWindowHandle)
+        } 'Spotlight did not open in safe mode.'
+        if ([DesktopSmoke]::FindClass('MonolithDock') -ne [IntPtr]::Zero) {
+            throw 'Safe mode did not suppress the Dock.'
+        }
+        [void]$launcher.CloseMainWindow()
+        Wait-Until { $launcher.HasExited } 'Safe-mode Spotlight did not exit.'
+        'Dock activation, fullscreen, live titles, Spotlight, shutdown and safe mode passed.'
+    } finally {
+        if ($launcher -and !$launcher.HasExited) {
+            if ($dockWindow -ne [IntPtr]::Zero) {
+                [void][DesktopSmoke]::Post($dockWindow, 0x10, [UIntPtr]::Zero, [IntPtr]::Zero)
+            }
+            if (!$launcher.WaitForExit(2000)) { Stop-Process -InputObject $launcher }
+        }
+        $fullscreen.Dispose()
+        $target.Dispose()
+        $env:LOCALAPPDATA = $localData
+    }
+}
+
 $originalDpi = [DesktopSmoke]::SetThreadDpiAwarenessContext([IntPtr]::new(-4))
+if ($Dock) {
+    try {
+        Invoke-DockSmoke (Resolve-Path $Binary)
+    } finally {
+        if ($originalDpi -ne [IntPtr]::Zero) {
+            [void][DesktopSmoke]::SetThreadDpiAwarenessContext($originalDpi)
+        }
+    }
+    return
+}
 $prefix = 'Monolith test ' + [guid]::NewGuid().ToString('N').Substring(0, 10)
 $normal = New-Object Windows.Forms.Form
 $owner = New-Object Windows.Forms.Form
@@ -79,7 +231,7 @@ try {
     $window = $launcher.MainWindowHandle
     $edit = [DesktopSmoke]::FindWindowEx($window, [IntPtr]::Zero, 'Edit', $null)
     $list = [DesktopSmoke]::FindWindowEx($window, [IntPtr]::Zero, 'ListBox', $null)
-    if (!$edit -or !$list) { throw 'Spotlight controls were not found.' }
+    if ($edit -eq [IntPtr]::Zero -or $list -eq [IntPtr]::Zero) { throw 'Spotlight controls were not found.' }
 
     [void][DesktopSmoke]::Write($edit, 0xC, [UIntPtr]::Zero, "@$prefix")
     $rows = @(Get-Rows $list)

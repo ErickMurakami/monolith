@@ -7,6 +7,7 @@ pub struct Config {
     pub theme: Theme,
     pub language: Language,
     pub shortcut: Shortcut,
+    pub dock: bool,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -83,6 +84,7 @@ mod tests {
     fn safe_mode_ignores_configuration_and_disables_shortcut() {
         let (config, issue) = load(Path::new(""), true);
         assert!(matches!(config.shortcut, Shortcut::Disabled));
+        assert!(!config.dock);
         assert!(issue.is_none());
     }
 }

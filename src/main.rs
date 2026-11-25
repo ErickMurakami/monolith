@@ -6,6 +6,8 @@ mod calculator;
 mod config;
 #[cfg(windows)]
 mod desktop;
+#[cfg(windows)]
+mod dock;
 #[cfg(any(windows, test))]
 mod search;
 #[cfg(windows)]

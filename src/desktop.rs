@@ -13,20 +13,26 @@ use windows_sys::Win32::{
     UI::WindowsAndMessaging::{
         EnumWindows, GW_OWNER, GWL_EXSTYLE, GWL_STYLE, GetDesktopWindow, GetForegroundWindow,
         GetShellWindow, GetWindow, GetWindowLongW, GetWindowRect, GetWindowTextW,
-        GetWindowThreadProcessId, IsIconic, IsWindowVisible, IsZoomed, SW_RESTORE,
+        GetWindowThreadProcessId, IsIconic, IsWindowVisible, IsZoomed, SW_MINIMIZE, SW_RESTORE,
         SetForegroundWindow, ShowWindowAsync, WS_CAPTION, WS_EX_APPWINDOW, WS_EX_NOACTIVATE,
         WS_EX_TOOLWINDOW,
     },
 };
 
 pub struct Window {
-    handle: HWND,
-    process: u32,
-    thread: u32,
+    pub target: WindowTarget,
     pub title: String,
     pub monitor: Option<usize>,
     pub minimised: bool,
     pub fullscreen: bool,
+    pub active: bool,
+}
+
+#[derive(Clone, Copy)]
+pub struct WindowTarget {
+    handle: HWND,
+    process: u32,
+    thread: u32,
 }
 
 pub struct Snapshot {
@@ -103,13 +109,10 @@ pub fn snapshot() -> io::Result<Snapshot> {
     let mut windows: Vec<_> = handles
         .into_iter()
         .filter(|&hwnd| hwnd != shell && hwnd != desktop)
-        .filter_map(|hwnd| describe(hwnd, own_process, &displays))
+        .filter_map(|hwnd| describe(hwnd, own_process, foreground, &displays))
         .collect();
     // Preserve native enumeration order for the other windows.
-    if let Some(index) = windows
-        .iter()
-        .position(|window| window.handle == foreground)
-    {
+    if let Some(index) = windows.iter().position(|window| window.active) {
         windows[..=index].rotate_right(1);
     }
     Ok(Snapshot {
@@ -147,7 +150,12 @@ fn eligible(hwnd: HWND) -> bool {
     }
 }
 
-fn describe(hwnd: HWND, own_process: u32, displays: &[Monitor]) -> Option<Window> {
+fn describe(
+    hwnd: HWND,
+    own_process: u32,
+    foreground: HWND,
+    displays: &[Monitor],
+) -> Option<Window> {
     let (process, thread) = identity(hwnd)?;
     if process == own_process || !eligible(hwnd) {
         return None;
@@ -166,13 +174,16 @@ fn describe(hwnd: HWND, own_process: u32, displays: &[Monitor]) -> Option<Window
     let fullscreen =
         !minimised && monitor.is_some_and(|index| covers_display(hwnd, &displays[index].bounds));
     Some(Window {
-        handle: hwnd,
-        process,
-        thread,
+        target: WindowTarget {
+            handle: hwnd,
+            process,
+            thread,
+        },
         title,
         monitor,
         minimised,
         fullscreen,
+        active: hwnd == foreground,
     })
 }
 
@@ -212,9 +223,27 @@ pub enum ActivationError {
     Refused,
 }
 
-impl Window {
-    pub fn activate(&self) -> Result<(), ActivationError> {
-        if identity(self.handle) != Some((self.process, self.thread)) || !eligible(self.handle) {
+impl WindowTarget {
+    pub fn toggle(self) -> Result<(), ActivationError> {
+        if !self.available() {
+            return Err(ActivationError::Unavailable);
+        }
+        unsafe {
+            if GetForegroundWindow() == self.handle && IsIconic(self.handle) == 0 {
+                return (ShowWindowAsync(self.handle, SW_MINIMIZE) != 0)
+                    .then_some(())
+                    .ok_or(ActivationError::Refused);
+            }
+        }
+        self.activate()
+    }
+
+    fn available(self) -> bool {
+        identity(self.handle) == Some((self.process, self.thread)) && eligible(self.handle)
+    }
+
+    pub fn activate(self) -> Result<(), ActivationError> {
+        if !self.available() {
             return Err(ActivationError::Unavailable);
         }
         // Recheck minimisation at selection time. The async variant avoids
@@ -228,6 +257,17 @@ impl Window {
             }
         }
         Ok(())
+    }
+}
+
+pub fn foreground_covers_monitor(monitor: HMONITOR, bounds: &RECT) -> bool {
+    unsafe {
+        let foreground = GetForegroundWindow();
+        identity(foreground).is_some_and(|(process, _)| process != std::process::id())
+            && eligible(foreground)
+            && IsIconic(foreground) == 0
+            && MonitorFromWindow(foreground, MONITOR_DEFAULTTONULL) == monitor
+            && covers_display(foreground, bounds)
     }
 }
 
