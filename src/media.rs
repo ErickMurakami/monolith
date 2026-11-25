@@ -34,6 +34,32 @@ pub struct NowPlaying {
     pub toggle: bool,
     pub previous: bool,
     pub next: bool,
+    pub timeline: Option<Timeline>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Timeline {
+    start: i64,
+    duration: i64,
+    position: i64,
+    measured_at: i64,
+    rate_milli: Option<i32>,
+}
+
+impl Timeline {
+    pub fn position_at(self, now: i64, playing: bool) -> (u32, bool) {
+        let rate = self
+            .rate_milli
+            .filter(|_| playing && self.measured_at > 0)
+            .unwrap_or(0);
+        let elapsed = now.saturating_sub(self.measured_at).max(0);
+        let advance = i128::from(elapsed) * i128::from(rate) / 1000;
+        let duration = i128::from(self.duration);
+        let position =
+            (i128::from(self.position) - i128::from(self.start) + advance).clamp(0, duration);
+        let continues = (rate > 0 && position < duration) || (rate < 0 && position > 0);
+        ((position * 1000 / duration) as u32, continues)
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -127,6 +153,7 @@ struct Subscription {
     session: Session,
     properties: Option<i64>,
     playback: Option<i64>,
+    timeline: Option<i64>,
 }
 
 impl Subscription {
@@ -145,10 +172,18 @@ impl Subscription {
                 Ok(())
             }))
             .ok();
+        let position = signals.clone();
+        let timeline = session
+            .TimelinePropertiesChanged(&TypedEventHandler::new(move |_, _| {
+                position.refresh();
+                Ok(())
+            }))
+            .ok();
         Self {
             session,
             properties,
             playback,
+            timeline,
         }
     }
 }
@@ -160,6 +195,9 @@ impl Drop for Subscription {
         }
         if let Some(token) = self.playback {
             let _ = self.session.RemovePlaybackInfoChanged(token);
+        }
+        if let Some(token) = self.timeline {
+            let _ = self.session.RemoveTimelinePropertiesChanged(token);
         }
     }
 }
@@ -237,6 +275,12 @@ fn read(session: &Session, generation: u64) -> Option<NowPlaying> {
     let playback = session.GetPlaybackInfo().ok()?;
     let flags = playback.Controls().ok()?;
     let playing = playback.PlaybackStatus().ok() == Some(Status::Playing);
+    let rate = playback
+        .PlaybackRate()
+        .and_then(|rate| rate.Value())
+        .ok()
+        .filter(|rate| rate.is_finite() && rate.abs() <= 1000.0)
+        .map(|rate| (rate * 1000.0).round() as i32);
     Some(NowPlaying {
         generation,
         title: title.chars().take(180).collect(),
@@ -250,6 +294,23 @@ fn read(session: &Session, generation: u64) -> Option<NowPlaying> {
             },
         previous: flags.IsPreviousEnabled().unwrap_or(false),
         next: flags.IsNextEnabled().unwrap_or(false),
+        timeline: read_timeline(session, rate),
+    })
+}
+
+fn read_timeline(session: &Session, rate_milli: Option<i32>) -> Option<Timeline> {
+    let value = session.GetTimelineProperties().ok()?;
+    let start = value.StartTime().ok()?.Duration;
+    let end = value.EndTime().ok()?.Duration;
+    let duration = end.checked_sub(start).filter(|duration| *duration > 0)?;
+    let position = value.Position().ok()?.Duration.clamp(start, end);
+    let measured_at = value.LastUpdatedTime().map_or(0, |time| time.UniversalTime);
+    Some(Timeline {
+        start,
+        duration,
+        position,
+        measured_at,
+        rate_milli,
     })
 }
 
@@ -285,5 +346,32 @@ fn perform(session: &Session, action: Action) {
     };
     if let Ok(operation) = operation {
         let _ = operation.join();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn advances_using_reported_rate_and_freezes_while_paused() {
+        let timeline = Timeline {
+            start: 10_000_000,
+            duration: 600_000_000,
+            position: 110_000_000,
+            measured_at: 2_000_000_000,
+            rate_milli: Some(1500),
+        };
+        assert_eq!(timeline.position_at(2_040_000_000, true), (266, true));
+        assert_eq!(timeline.position_at(2_040_000_000, false), (166, false));
+        assert_eq!(timeline.position_at(i64::MAX, true), (1000, false));
+        assert_eq!(
+            Timeline {
+                rate_milli: None,
+                ..timeline
+            }
+            .position_at(2_040_000_000, true),
+            (166, false)
+        );
     }
 }

@@ -9,12 +9,19 @@ use crate::{
 };
 use std::{cell::Cell, ffi::c_void, io, mem::size_of, ptr::null_mut};
 use windows_sys::Win32::{
-    Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
+    Foundation::{FILETIME, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
     Graphics::Gdi::*,
-    System::SystemServices::{SS_CENTERIMAGE, SS_ENDELLIPSIS, SS_NOTIFY},
+    System::{
+        SystemInformation::GetSystemTimeAsFileTime,
+        SystemServices::{SS_CENTERIMAGE, SS_ENDELLIPSIS, SS_NOTIFY},
+    },
     UI::{
-        Accessibility::*, Controls::*, HiDpi::GetDpiForWindow,
-        Input::KeyboardAndMouse::EnableWindow, WindowsAndMessaging::*,
+        Accessibility::*,
+        Controls::*,
+        HiDpi::GetDpiForWindow,
+        Input::KeyboardAndMouse::EnableWindow,
+        Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass},
+        WindowsAndMessaging::*,
     },
 };
 
@@ -23,6 +30,7 @@ const PREVIOUS: usize = 2;
 const TOGGLE: usize = 3;
 const NEXT: usize = 4;
 const REPOSITION: usize = 1;
+const PROGRESS: usize = 2;
 
 thread_local! {
     static TARGET: Cell<HWND> = const { Cell::new(null_mut()) };
@@ -39,6 +47,7 @@ struct State {
     launcher: HWND,
     host: HWND,
     controls: [HWND; 4],
+    progress: HWND,
     font: HFONT,
     dpi: u32,
     brush: HBRUSH,
@@ -94,6 +103,7 @@ impl Island {
                     launcher,
                     host,
                     controls: [null_mut(); 4],
+                    progress: null_mut(),
                     font: null_mut(),
                     dpi: 0,
                     brush: CreateSolidBrush(palette.background),
@@ -107,6 +117,7 @@ impl Island {
             if island.state.brush.is_null() {
                 return Err(io::Error::last_os_error());
             }
+            island.state.progress = progress_control(hwnd, instance, &raw mut *island.state);
             for (index, control) in island.state.controls.iter_mut().enumerate() {
                 let (class, style) = if index == 0 {
                     ("STATIC", SS_NOTIFY | SS_CENTERIMAGE | SS_ENDELLIPSIS)
@@ -154,6 +165,99 @@ impl Island {
     }
 }
 
+unsafe fn progress_control(hwnd: HWND, instance: *mut c_void, state: *mut State) -> HWND {
+    unsafe {
+        let controls = INITCOMMONCONTROLSEX {
+            dwSize: size_of::<INITCOMMONCONTROLSEX>() as u32,
+            dwICC: ICC_PROGRESS_CLASS,
+        };
+        if InitCommonControlsEx(&controls) == 0 {
+            return null_mut();
+        }
+        let progress = CreateWindowExW(
+            0,
+            PROGRESS_CLASSW,
+            wide("Playback progress").as_ptr(),
+            WS_CHILD | PBS_SMOOTH,
+            0,
+            0,
+            0,
+            0,
+            hwnd,
+            null_mut(),
+            instance,
+            null_mut(),
+        );
+        if !progress.is_null() {
+            if SetWindowSubclass(progress, Some(progress_proc), 1, state as usize) == 0 {
+                DestroyWindow(progress);
+                return null_mut();
+            }
+            SetWindowLongW(
+                progress,
+                GWL_STYLE,
+                GetWindowLongW(progress, GWL_STYLE) & !(WS_BORDER as i32),
+            );
+            SetWindowLongW(
+                progress,
+                GWL_EXSTYLE,
+                GetWindowLongW(progress, GWL_EXSTYLE)
+                    & !((WS_EX_STATICEDGE | WS_EX_CLIENTEDGE | WS_EX_WINDOWEDGE) as i32),
+            );
+            SetWindowPos(
+                progress,
+                null_mut(),
+                0,
+                0,
+                0,
+                0,
+                SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+            );
+            SendMessageW(progress, PBM_SETRANGE32, 0, 1000);
+        }
+        progress
+    }
+}
+
+unsafe extern "system" fn progress_proc(
+    hwnd: HWND,
+    msg: u32,
+    wp: WPARAM,
+    lp: LPARAM,
+    _: usize,
+    reference: usize,
+) -> LRESULT {
+    // The Island owns this state until it destroys all child windows.
+    unsafe {
+        match msg {
+            WM_ERASEBKGND => return 1,
+            WM_NCPAINT | WM_NCCALCSIZE => return 0,
+            WM_PAINT => {
+                let palette = (*(reference as *const State)).palette;
+                let mut paint = PAINTSTRUCT::default();
+                let dc = BeginPaint(hwnd, &mut paint);
+                let mut bounds = RECT::default();
+                GetClientRect(hwnd, &mut bounds);
+                let fraction = DefSubclassProc(hwnd, PBM_GETPOS, 0, 0).clamp(0, 1000) as i32;
+                let brush = GetStockObject(DC_BRUSH) as HBRUSH;
+                let previous = SetDCBrushColor(dc, palette.surface);
+                FillRect(dc, &bounds, brush);
+                bounds.right = bounds.left + (bounds.right - bounds.left) * fraction / 1000;
+                SetDCBrushColor(dc, palette.accent);
+                FillRect(dc, &bounds, brush);
+                SetDCBrushColor(dc, previous);
+                EndPaint(hwnd, &paint);
+                return 0;
+            }
+            WM_NCDESTROY => {
+                RemoveWindowSubclass(hwnd, Some(progress_proc), 1);
+            }
+            _ => {}
+        }
+        DefSubclassProc(hwnd, msg, wp, lp)
+    }
+}
+
 impl Drop for Island {
     fn drop(&mut self) {
         TARGET.set(null_mut());
@@ -196,6 +300,7 @@ fn schedule(hwnd: HWND) {
 
 unsafe fn layout(hwnd: HWND, state: *mut State) {
     unsafe {
+        KillTimer(hwnd, PROGRESS);
         let Some(current) = (*state).current.as_ref() else {
             ShowWindow(hwnd, SW_HIDE);
             return;
@@ -219,6 +324,7 @@ unsafe fn layout(hwnd: HWND, state: *mut State) {
             _ => format!("{}   ·   {}", current.title, current.artist),
         };
         let playing = current.playing;
+        let show_progress = expanded && current.timeline.is_some() && !(*state).progress.is_null();
         let availability = [current.previous, current.toggle, current.next];
         let controls = (*state).controls;
         let dpi = GetDpiForWindow(hwnd);
@@ -253,7 +359,13 @@ unsafe fn layout(hwnd: HWND, state: *mut State) {
         let work_width = (work.right - work.left).max(1);
         let width = scale(346).min(work_width.saturating_sub(scale(16))).max(1);
         let label_height = scale(27);
-        let height = if expanded { scale(63) } else { label_height };
+        let height = if show_progress {
+            scale(73)
+        } else if expanded {
+            scale(63)
+        } else {
+            label_height
+        };
         let inset = scale(8);
         let left = work.left + (work_width - width) / 2;
         let mut top = work.top + scale(4);
@@ -300,6 +412,20 @@ unsafe fn layout(hwnd: HWND, state: *mut State) {
                 ShowWindow(button, SW_HIDE);
             }
         }
+        let progress = (*state).progress;
+        if show_progress {
+            SetWindowPos(
+                progress,
+                null_mut(),
+                inset,
+                scale(62),
+                (width - 2 * inset).max(1),
+                scale(3),
+                SWP_SHOWWINDOW | SWP_NOZORDER | SWP_NOACTIVATE,
+            );
+        } else if !progress.is_null() {
+            ShowWindow(progress, SW_HIDE);
+        }
         SetWindowPos(
             hwnd,
             HWND_TOPMOST,
@@ -309,6 +435,34 @@ unsafe fn layout(hwnd: HWND, state: *mut State) {
             height,
             SWP_SHOWWINDOW | SWP_NOACTIVATE,
         );
+        if show_progress {
+            update_progress(hwnd, state);
+        }
+    }
+}
+
+unsafe fn update_progress(hwnd: HWND, state: *mut State) {
+    unsafe {
+        KillTimer(hwnd, PROGRESS);
+        let bar = (*state).progress;
+        if IsWindowVisible(bar) == 0 {
+            return;
+        }
+        let Some(current) = (*state).current.as_ref() else {
+            return;
+        };
+        let Some(timeline) = current.timeline else {
+            return;
+        };
+        let mut timestamp = FILETIME::default();
+        GetSystemTimeAsFileTime(&mut timestamp);
+        let now = (i64::from(timestamp.dwHighDateTime) << 32) | i64::from(timestamp.dwLowDateTime);
+        let (position, continues) = timeline.position_at(now, current.playing);
+        SendMessageW(bar, PBM_SETPOS, position as usize, 0);
+        InvalidateRect(bar, std::ptr::null(), 0);
+        if continues {
+            SetTimer(hwnd, PROGRESS, 1000, None);
+        }
     }
 }
 
@@ -402,6 +556,10 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                 KillTimer(hwnd, REPOSITION);
                 PENDING.set(false);
                 layout(hwnd, state);
+                0
+            }
+            WM_TIMER if wp == PROGRESS => {
+                update_progress(hwnd, state);
                 0
             }
             WM_DISPLAYCHANGE | WM_DPICHANGED | WM_SETTINGCHANGE => {

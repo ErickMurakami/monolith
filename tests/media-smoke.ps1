@@ -65,8 +65,19 @@ const showTrack = () => {
     });
 };
 showTrack();
-audio.addEventListener('playing', () => { session.playbackState = 'playing'; });
-audio.addEventListener('pause', () => { session.playbackState = 'paused'; });
+function updateTimeline() {
+    if (Number.isFinite(audio.duration) && audio.duration > 0) {
+        session.setPositionState({
+            duration: audio.duration,
+            playbackRate: audio.playbackRate,
+            position: Math.min(audio.currentTime, audio.duration)
+        });
+    }
+}
+audio.addEventListener('loadedmetadata', updateTimeline);
+audio.addEventListener('seeked', updateTimeline);
+audio.addEventListener('playing', () => { session.playbackState = 'playing'; updateTimeline(); });
+audio.addEventListener('pause', () => { session.playbackState = 'paused'; updateTimeline(); });
 session.setActionHandler('play', () => audio.play());
 session.setActionHandler('pause', () => audio.pause());
 session.setActionHandler('nexttrack', () => {
@@ -99,11 +110,21 @@ session.setActionHandler('previoustrack', () => {
     if (![DesktopSmoke]::Click($label)) { throw 'Could not expand the media controls.' }
     $toggle = [DesktopSmoke]::FindWindowEx($island, [IntPtr]::Zero, 'Button', 'Pause')
     if (![DesktopSmoke]::IsWindowVisible($toggle)) { throw 'The expanded media controls are not visible.' }
+    $progress = [DesktopSmoke]::FindChild($island, 'msctls_progress32')
+    Wait-Until {
+        [DesktopSmoke]::IsWindowVisible($progress) -and
+        [DesktopSmoke]::Send($progress, 1032, [UIntPtr]::Zero, [IntPtr]::Zero).ToInt64() -gt 0
+    } 'The published media timeline did not produce visible playback progress.'
     if ($mediaCapture) { Save-SurfaceCapture $island $mediaCapture }
 
     Click-IslandAction $island 'Pause'
     Wait-Until { [DesktopSmoke]::FindWindowEx($island, [IntPtr]::Zero, 'Button', 'Play') -ne [IntPtr]::Zero } 'The media session did not report the paused state.'
-    Start-Sleep -Milliseconds ([DesktopSmoke]::GetDoubleClickTime() + 50)
+    Start-Sleep -Milliseconds 300
+    $paused = [DesktopSmoke]::Send($progress, 1032, [UIntPtr]::Zero, [IntPtr]::Zero).ToInt64()
+    Start-Sleep -Milliseconds ([Math]::Max(1100, [DesktopSmoke]::GetDoubleClickTime() + 50))
+    if ([DesktopSmoke]::Send($progress, 1032, [UIntPtr]::Zero, [IntPtr]::Zero).ToInt64() -ne $paused) {
+        throw 'Playback progress did not freeze while paused.'
+    }
     Click-IslandAction $island 'Play'
     Wait-Until { [DesktopSmoke]::FindWindowEx($island, [IntPtr]::Zero, 'Button', 'Pause') -ne [IntPtr]::Zero } 'The media session did not resume.'
     Click-IslandAction $island 'Next'
@@ -120,7 +141,7 @@ session.setActionHandler('previoustrack', () => {
     Wait-Until { ![DesktopSmoke]::IsWindowVisible($island) } 'The media Island did not hide in fullscreen.'
     $fullscreen.SetBounds(60, 60, 640, 410)
     Wait-Until { [DesktopSmoke]::IsWindowVisible($island) } 'The media Island did not recover after fullscreen.'
-    'Real Windows media metadata, play, pause, next, previous and fullscreen passed.'
+    'Real Windows media metadata, transport, timeline, pause freeze and fullscreen passed.'
 } finally {
     if ($launcher -and !$launcher.HasExited) {
         $window = [DesktopSmoke]::FindVisibleForProcess('MonolithTopBar', [uint32]$launcher.Id)

@@ -19,3 +19,4 @@
 - Added live DWM thumbnails for Dock window tiles on pointer hover.
 - Added cached monochrome Shell icons and native tooltips to the Dock.
 - Added a native Dynamic Island for Windows media metadata and transport actions.
+- Added playback progress based on the Windows media timeline.
