@@ -275,3 +275,13 @@ After completing a meaningful checkpoint, report only:
 Then continue implementation when authorised and execution budget permits.
 
 The goal is a reliable daily-driver desktop experience, not an impressive development report.
+
+## Active Delivery Sprint
+
+When docs/SPRINT.md exists, use it as the active short-term delivery priority.
+
+Complete the highest-priority unblocked tasks first.
+
+The sprint does not override architecture, security, recovery, licensing, approved design or functional acceptance requirements.
+
+Remove or archive the sprint document after the milestone is completed.
