@@ -8,6 +8,7 @@ pub struct Config {
     pub language: Language,
     pub shortcut: Shortcut,
     pub dock: bool,
+    pub dock_pins: Vec<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]

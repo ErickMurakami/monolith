@@ -8,17 +8,17 @@ Foundation and the first native application are implemented. Desktop Experience 
 - `src/search.rs` discovers Start menu desktop shortcuts and ranks local matches.
 - `src/calculator.rs` evaluates bounded arithmetic expressions entered in Spotlight.
 - `src/desktop.rs` discovers eligible windows and their display, detects fullscreen geometry and switches on explicit selection.
-- `src/dock.rs` presents open windows on the primary display and handles live updates, minimisation, restoration and fullscreen suppression.
+- `src/dock.rs` presents ordered, configurable Start menu pins and open windows on the primary display. The Dock handles live updates, minimisation, restoration and fullscreen suppression.
 - `src/config.rs` validates TOML, preserves invalid files and supports a safe start.
 - `benchmarks/measure.ps1` samples Windows and Monolith memory, CPU and I/O.
 - `docs/spotlight.png` shows the running release build with a verification shortcut.
 - `docs/dock.png` is a cropped capture of the running Dock with a verification window selected.
 
-Dock pins, grouping, previews and per-display placement are pending. Top Bar, Island, workspace management, Files, indexing, tuning, settings UI, Android integration and installers are pending.
+Dock drag reordering, grouping, previews and per-display placement are pending. Top Bar, Island, workspace management, Files, indexing, tuning, settings UI, Android integration and installers are pending.
 
 ## Validation
 
-Validated on native Windows 11 26H2. Cargo formatting, Clippy with warnings denied, seven unit tests and the locked release build passed. A live desktop run verified shortcut launch, safe-mode exit and calculator output. `tests/desktop-smoke.ps1` verified filtering out hidden and owned windows, identifying fullscreen and minimised windows, refreshing after a window closes and switching to a minimised window. The same script with `-Dock` verified mouse clicks, minimisation, restoration, title changes, fullscreen suppression and recovery, Spotlight opening, clean exit and safe-mode suppression. An additional live check found packaged Notepad by the title of a temporary test document. The launcher display capture was visually reviewed. Cross-build, high contrast and mixed-DPI testing remain pending.
+Validated on native Windows 11 26H2. Cargo formatting, Clippy with warnings denied, eight unit tests and the locked release build passed. A live desktop run verified shortcut launch, safe-mode exit and calculator output. `tests/desktop-smoke.ps1` verified filtering out hidden and owned windows, identifying fullscreen and minimised windows, refreshing after a window closes and switching to a minimised window. The same script with `-Dock` verified mouse clicks, minimisation, restoration, title changes, fullscreen suppression and recovery, Spotlight opening, clean exit and safe-mode suppression. The script with `-Pins` verified configured ordering, deduplication and launching a real shortcut. An additional live check found packaged Notepad by the title of a temporary test document. The launcher display capture was visually reviewed. Cross-build, high contrast and mixed-DPI testing remain pending.
 
 Checked the declared licences of all locked dependencies. OSV returned zero advisory matches for 19 registry package versions. Cargo Audit also passed against the RustSec database with warnings denied.
 
@@ -36,4 +36,4 @@ The binary needs no elevation and makes no persistent changes to Windows. Close 
 
 ## Next task
 
-Add configured Dock pins resolved against the existing Start menu catalogue. Validate launching and pin order, then add window grouping with a packaged-app-aware identity.
+Refine Spotlight into a borderless native search overlay, then add Dock drag reordering and packaged-app-aware grouping.

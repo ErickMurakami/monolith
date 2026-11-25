@@ -1,6 +1,7 @@
 param(
     [string]$Binary = (Join-Path $PSScriptRoot '../target/release/monolith.exe'),
-    [switch]$Dock
+    [switch]$Dock,
+    [switch]$Pins
 )
 
 $ErrorActionPreference = 'Stop'
@@ -41,6 +42,11 @@ public static class DesktopSmoke {
     [DllImport("user32.dll")] static extern bool SetCursorPos(int x, int y);
     [DllImport("user32.dll")] static extern IntPtr WindowFromPoint(Point point);
     [DllImport("user32.dll")] static extern uint SendInput(uint count, Input[] events, int size);
+    public static int Left(IntPtr target) {
+        Rect bounds;
+        if (!GetWindowRect(target, out bounds)) throw new InvalidOperationException("Window bounds unavailable.");
+        return bounds.Left;
+    }
 
     // Only click a known test surface if it is unobstructed.
     public static bool Click(IntPtr target) {
@@ -98,6 +104,64 @@ function Focus-Fixture($Form) {
         [DesktopSmoke]::GetForegroundWindow() -eq $Form.Handle
     } 'Fixture could not receive foreground focus.'
     $Form.TopMost = $false
+}
+
+function Invoke-PinSmoke($Application) {
+    if ([DesktopSmoke]::FindClass('MonolithDock') -ne [IntPtr]::Zero) { throw 'Close the running Dock first.' }
+    $area = Join-Path ([IO.Path]::GetTempPath()) ('monolith-pins-' + [guid]::NewGuid().ToString('N'))
+    $originalAppData = $env:APPDATA
+    $originalLocalData = $env:LOCALAPPDATA
+    $launcher = $null
+    $dockWindow = [IntPtr]::Zero
+    try {
+        $env:APPDATA = $area
+        $env:LOCALAPPDATA = $area
+        $config = Join-Path $area 'Monolith'
+        $shortcuts = Join-Path $area 'Microsoft/Windows/Start Menu/Programs'
+        New-Item -ItemType Directory -Path $config,$shortcuts -Force | Out-Null
+        @(
+            'dock = true'
+            'shortcut = "disabled"'
+            'dock_pins = ["Verification Z", "Verification A", "missing", "verification z"]'
+        ) | Set-Content -Encoding ASCII (Join-Path $config 'config.toml')
+        $marker = Join-Path $area 'launched.txt'
+        $shell = New-Object -ComObject WScript.Shell
+        foreach ($label in 'Verification A','Verification Z') {
+            $link = $shell.CreateShortcut((Join-Path $shortcuts "$label.lnk"))
+            $link.TargetPath = $env:ComSpec
+            $link.Arguments = '/d /c echo verified>"' + $marker + '"'
+            $link.WindowStyle = 7
+            $link.Save()
+        }
+        $launcher = Start-Process -FilePath $Application -PassThru
+        Wait-Until { [DesktopSmoke]::IsWindowVisible([DesktopSmoke]::FindClass('MonolithDock')) } 'Configured Dock did not open.'
+        $dockWindow = [DesktopSmoke]::FindClass('MonolithDock')
+        $first = [DesktopSmoke]::FindWindowEx($dockWindow, [IntPtr]::Zero, 'Button', 'Verification Z')
+        $second = [DesktopSmoke]::FindWindowEx($dockWindow, [IntPtr]::Zero, 'Button', 'Verification A')
+        if ([DesktopSmoke]::Left($first) -ge [DesktopSmoke]::Left($second)) { throw 'Dock pins are out of order.' }
+        if ([DesktopSmoke]::FindWindowEx($dockWindow, $first, 'Button', 'Verification Z') -ne [IntPtr]::Zero) {
+            throw 'A repeated pin was rendered twice.'
+        }
+        if (![DesktopSmoke]::Click($first)) { throw 'Could not click the first pin.' }
+        Wait-Until { Test-Path -LiteralPath $marker } 'The pinned shortcut did not run.'
+        'Dock pin order, deduplication and shortcut launch passed.'
+    } finally {
+        if ($launcher -and !$launcher.HasExited) {
+            if ($dockWindow -ne [IntPtr]::Zero) {
+                [void][DesktopSmoke]::Post($dockWindow, 0x10, [UIntPtr]::Zero, [IntPtr]::Zero)
+            }
+            if (!$launcher.WaitForExit(2000)) { Stop-Process -InputObject $launcher }
+        }
+        $env:APPDATA = $originalAppData
+        $env:LOCALAPPDATA = $originalLocalData
+        if (Test-Path -LiteralPath $area) {
+            $resolved = (Resolve-Path -LiteralPath $area).Path
+            $parent = (Resolve-Path -LiteralPath ([IO.Path]::GetTempPath())).Path.TrimEnd('\')
+            if ((Split-Path -Parent $resolved) -eq $parent -and (Split-Path -Leaf $resolved) -match '^monolith-pins-[0-9a-f]{32}$') {
+                Remove-Item -LiteralPath $resolved -Recurse
+            }
+        }
+    }
 }
 
 function Invoke-DockSmoke($Application) {
@@ -187,9 +251,10 @@ function Invoke-DockSmoke($Application) {
 }
 
 $originalDpi = [DesktopSmoke]::SetThreadDpiAwarenessContext([IntPtr]::new(-4))
-if ($Dock) {
+if ($Dock -or $Pins) {
     try {
-        Invoke-DockSmoke (Resolve-Path $Binary)
+        if ($Pins) { Invoke-PinSmoke (Resolve-Path $Binary) }
+        else { Invoke-DockSmoke (Resolve-Path $Binary) }
     } finally {
         if ($originalDpi -ne [IntPtr]::Zero) {
             [void][DesktopSmoke]::SetThreadDpiAwarenessContext($originalDpi)

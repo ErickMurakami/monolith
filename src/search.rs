@@ -4,9 +4,26 @@ use std::{
     path::{Path, PathBuf},
 };
 
+#[derive(Clone)]
 pub struct App {
     pub name: String,
     pub path: PathBuf,
+}
+
+pub fn resolve_pins(apps: &[App], names: &[String]) -> Vec<App> {
+    let mut seen = HashSet::new();
+    names
+        .iter()
+        .filter_map(|name| {
+            let name = name.trim().to_lowercase();
+            if !seen.insert(name.clone()) {
+                return None;
+            }
+            apps.iter()
+                .find(|app| app.name.to_lowercase() == name)
+                .cloned()
+        })
+        .collect()
 }
 
 fn scan(dir: &Path, depth: usize, apps: &mut Vec<App>) {
@@ -83,6 +100,20 @@ pub fn search<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pins_follow_configuration_order_and_resolve_exact_names() {
+        let apps = ["Editor", "Terminal", "Terminal Preview"].map(|name| App {
+            name: name.into(),
+            path: PathBuf::new(),
+        });
+        let names = ["terminal", "missing", "Editor", " Terminal "].map(str::to_owned);
+        let pins = resolve_pins(&apps, &names);
+        assert_eq!(
+            pins.iter().map(|app| app.name.as_str()).collect::<Vec<_>>(),
+            ["Terminal", "Editor"]
+        );
+    }
 
     #[test]
     fn ranks_prefix_then_substring_then_subsequence() {

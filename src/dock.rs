@@ -2,7 +2,8 @@
 
 use crate::{
     desktop::{self, Window},
-    windows::{rgb, wide},
+    search::App,
+    windows::{launch_shortcut, rgb, wide},
 };
 use std::{cell::Cell, ffi::c_void, io, mem::size_of, ptr::null_mut};
 use windows_sys::Win32::{
@@ -33,6 +34,8 @@ struct State {
     launcher: HWND,
     buttons: Vec<HWND>,
     windows: Vec<Window>,
+    pins: Vec<App>,
+    visible_pins: usize,
     brush: HBRUSH,
     font: HFONT,
     dpi: u32,
@@ -46,6 +49,7 @@ impl Dock {
         launcher: HWND,
         dark: bool,
         portuguese: bool,
+        pins: Vec<App>,
     ) -> io::Result<Self> {
         // This constructor is called once, on the thread that pumps both windows.
         unsafe {
@@ -84,6 +88,8 @@ impl Dock {
                     launcher,
                     buttons: Vec::new(),
                     windows: Vec::new(),
+                    pins,
+                    visible_pins: 0,
                     brush: CreateSolidBrush(if dark {
                         rgb(8, 10, 13)
                     } else {
@@ -258,9 +264,11 @@ unsafe fn refresh(hwnd: HWND, state: *mut State) {
             .map(|snapshot| snapshot.windows)
             .unwrap_or_default();
         windows.sort_by_cached_key(|window| window.title.to_lowercase());
-        windows.truncate(capacity);
+        let pin_count = (*state).pins.len().min(capacity);
+        (*state).visible_pins = pin_count;
+        windows.truncate(capacity - pin_count);
         (*state).windows = windows;
-        let button_count = (*state).windows.len() + 2;
+        let button_count = pin_count + (*state).windows.len() + 2;
         let width = button_count as i32 * step + 2 * inset;
         let height = scale(37);
         let left = work.left + ((work.right - work.left - width) / 2).max(0);
@@ -274,16 +282,24 @@ unsafe fn refresh(hwnd: HWND, state: *mut State) {
         let exit = if (*state).portuguese { "Sair" } else { "Exit" };
         let buttons = &(*state).buttons;
         let windows = &(*state).windows;
+        let pins = &(*state).pins;
         for (index, &button) in buttons.iter().enumerate() {
             let (position, label) = match index {
                 0 => (0, spotlight),
                 1 => (button_count as i32 - 1, exit),
                 _ => {
-                    let Some(window) = windows.get(index - 2) else {
+                    let label = if index - 2 < pin_count {
+                        Some(pins[index - 2].name.as_str())
+                    } else {
+                        windows
+                            .get(index - 2 - pin_count)
+                            .map(|window| window.title.as_str())
+                    };
+                    let Some(label) = label else {
                         ShowWindow(button, SW_HIDE);
                         continue;
                     };
-                    (index as i32 - 1, window.title.as_str())
+                    (index as i32 - 1, label)
                 }
             };
             SetWindowTextW(button, wide(label).as_ptr());
@@ -362,7 +378,8 @@ unsafe fn draw(state: *mut State, item: &DRAWITEMSTRUCT) {
         if item
             .CtlID
             .checked_sub(FIRST_WINDOW)
-            .and_then(|index| windows.get(index as usize))
+            .and_then(|index| (index as usize).checked_sub((*state).visible_pins))
+            .and_then(|index| windows.get(index))
             .is_some_and(|window| window.active)
         {
             let centre = area.left + (area.right - area.left) / 2;
@@ -400,9 +417,16 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
                         PostMessageW((*state).launcher, WM_CLOSE, 0, 0);
                     }
                     FIRST_WINDOW.. => {
+                        let index = (id - FIRST_WINDOW) as usize;
+                        if index < (*state).visible_pins {
+                            let pins = &(*state).pins;
+                            let path = pins[index].path.clone();
+                            launch_shortcut(hwnd, &path);
+                            return 0;
+                        }
                         let windows = &(*state).windows;
                         let target = windows
-                            .get((id - FIRST_WINDOW) as usize)
+                            .get(index - (*state).visible_pins)
                             .map(|window| window.target);
                         if let Some(target) = target
                             && target.toggle().is_err()

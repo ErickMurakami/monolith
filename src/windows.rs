@@ -165,6 +165,14 @@ pub fn run() -> io::Result<()> {
         let state_ptr = Box::into_raw(state);
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, state_ptr as isize);
         let show_dock = !safe && (settings.dock || args.iter().any(|arg| arg == "--dock"));
+        let pins = if show_dock && !settings.dock_pins.is_empty() {
+            let apps = (*state_ptr)
+                .apps
+                .get_or_insert_with(|| search::discover(roots()));
+            search::resolve_pins(apps, &settings.dock_pins)
+        } else {
+            Vec::new()
+        };
         let result = run_window(
             hwnd,
             instance,
@@ -172,6 +180,7 @@ pub fn run() -> io::Result<()> {
             settings.shortcut,
             resident,
             show_dock,
+            pins,
         );
         if IsWindow(hwnd) != 0 {
             DestroyWindow(hwnd);
@@ -189,6 +198,7 @@ unsafe fn run_window(
     shortcut: Shortcut,
     resident: bool,
     show_dock: bool,
+    pins: Vec<App>,
 ) -> io::Result<()> {
     unsafe {
         let dark = i32::from((*state).dark);
@@ -265,7 +275,7 @@ unsafe fn run_window(
             );
         }
         let dock = if show_dock {
-            match Dock::new(instance, hwnd, (*state).dark, (*state).portuguese) {
+            match Dock::new(instance, hwnd, (*state).dark, (*state).portuguese, pins) {
                 Ok(dock) => Some(dock),
                 Err(error) => {
                     report(&format!("Could not open the Dock ({error})"));
@@ -558,7 +568,14 @@ unsafe fn open_selected(hwnd: HWND, state: *mut State) {
         let Some(app) = (*state).apps.as_ref().and_then(|apps| apps.get(index)) else {
             return;
         };
-        let target: Vec<_> = app.path.as_os_str().encode_wide().chain([0]).collect();
+        launch_shortcut(hwnd, &app.path);
+    }
+}
+
+/// The path must come from the local Start menu catalogue.
+pub(crate) unsafe fn launch_shortcut(hwnd: HWND, path: &std::path::Path) {
+    let target: Vec<_> = path.as_os_str().encode_wide().chain([0]).collect();
+    unsafe {
         let result = ShellExecuteW(
             hwnd,
             wide("open").as_ptr(),
