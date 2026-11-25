@@ -6,6 +6,7 @@ param(
     [switch]$TopBar,
     [switch]$AutoHide,
     [switch]$Hotkey,
+    [switch]$Preview,
     [string]$Capture
 )
 
@@ -222,6 +223,65 @@ function Focus-Fixture($Form) {
         [DesktopSmoke]::GetForegroundWindow() -eq $Form.Handle
     } 'Fixture could not receive foreground focus.'
     $Form.TopMost = $false
+}
+
+function Invoke-PreviewSmoke($Application) {
+    $fixture = New-Object Windows.Forms.Form
+    $cursor = [Windows.Forms.Cursor]::Position
+    $launcher = $null
+    $dockWindow = [IntPtr]::Zero
+    try {
+        $fixture.Text = '! Preview verification'
+        $fixture.BackColor = [Drawing.Color]::FromArgb(236,236,236)
+        $fixture.Show()
+        Focus-Fixture $fixture
+        $launcher = Start-Process -FilePath $Application -ArgumentList '--dock' -PassThru
+        Wait-Until {
+            $script:previewDock = [DesktopSmoke]::FindVisibleForProcess('MonolithDock', [uint32]$launcher.Id)
+            $script:previewDock -ne [IntPtr]::Zero
+        } 'The preview test Dock did not appear.'
+        $dockWindow = $script:previewDock
+        $tile = [DesktopSmoke]::FindWindowEx($dockWindow, [IntPtr]::Zero, 'Button', $fixture.Text)
+        if ($tile -eq [IntPtr]::Zero) { throw 'The preview source tile did not appear.' }
+        $tileRect = [DesktopSmoke]::Bounds($tile)
+        [Windows.Forms.Cursor]::Position = [Drawing.Point]::new(
+            [int](($tileRect[0]+$tileRect[2])/2), [int](($tileRect[1]+$tileRect[3])/2)
+        )
+        Wait-Until {
+            [DesktopSmoke]::FindVisibleForProcess('MonolithDockPreview', [uint32]$launcher.Id) -ne [IntPtr]::Zero
+        } 'The Dock did not show a live thumbnail.'
+        $popup = [DesktopSmoke]::FindVisibleForProcess('MonolithDockPreview', [uint32]$launcher.Id)
+        if ([DesktopSmoke]::GetForegroundWindow() -ne $fixture.Handle) { throw 'The preview took foreground focus.' }
+        $bounds = [DesktopSmoke]::Bounds($popup)
+        if ($bounds[3] -ge $tileRect[1]) { throw 'The thumbnail is not positioned above the tile.' }
+        Add-Type -AssemblyName System.Drawing
+        $bitmap = [Drawing.Bitmap]::new(1, 1)
+        $graphics = [Drawing.Graphics]::FromImage($bitmap)
+        try {
+            Wait-Until {
+                $graphics.CopyFromScreen([int](($bounds[0]+$bounds[2])/2), [int](($bounds[1]+$bounds[3])/2), 0, 0, $bitmap.Size)
+                $pixel = $bitmap.GetPixel(0, 0)
+                $pixel.R -gt 210 -and $pixel.G -gt 210 -and $pixel.B -gt 210
+            } 'The DWM thumbnail does not show the verification window client.'
+        } finally {
+            $graphics.Dispose()
+            $bitmap.Dispose()
+        }
+        if ($Capture) { Save-SurfaceCapture $popup $Capture }
+        $source = [DesktopSmoke]::Bounds($fixture.Handle)
+        [Windows.Forms.Cursor]::Position = [Drawing.Point]::new(
+            [int](($source[0]+$source[2])/2), [int](($source[1]+$source[3])/2)
+        )
+        Wait-Until { ![DesktopSmoke]::IsWindowVisible($popup) } 'The thumbnail stayed visible after pointer exit.'
+        'Live DWM thumbnail pixels, placement, non-activation and pointer cleanup passed.'
+    } finally {
+        if ($launcher -and !$launcher.HasExited) {
+            if ($dockWindow -ne [IntPtr]::Zero) { [void][DesktopSmoke]::Post($dockWindow, 0x10, [UIntPtr]::Zero, [IntPtr]::Zero) }
+            if (!$launcher.WaitForExit(2000)) { Stop-Process -InputObject $launcher }
+        }
+        $fixture.Dispose()
+        [Windows.Forms.Cursor]::Position = $cursor
+    }
 }
 
 function Invoke-HotkeySmoke($Application) {
@@ -669,13 +729,14 @@ function Invoke-DockSmoke($Application) {
 }
 
 $originalDpi = [DesktopSmoke]::SetThreadDpiAwarenessContext([IntPtr]::new(-4))
-if ($Dock -or $Pins -or $Spotlight -or $TopBar -or $AutoHide -or $Hotkey) {
+if ($Dock -or $Pins -or $Spotlight -or $TopBar -or $AutoHide -or $Hotkey -or $Preview) {
     try {
         if ($Pins) { Invoke-PinSmoke (Resolve-Path $Binary) }
         elseif ($Spotlight) { Invoke-SpotlightSmoke (Resolve-Path $Binary) }
         elseif ($TopBar) { Invoke-TopBarSmoke (Resolve-Path $Binary) }
         elseif ($AutoHide) { Invoke-AutoHideSmoke (Resolve-Path $Binary) }
         elseif ($Hotkey) { Invoke-HotkeySmoke (Resolve-Path $Binary) }
+        elseif ($Preview) { Invoke-PreviewSmoke (Resolve-Path $Binary) }
         else { Invoke-DockSmoke (Resolve-Path $Binary) }
     } finally {
         if ($originalDpi -ne [IntPtr]::Zero) {

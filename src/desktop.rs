@@ -324,6 +324,10 @@ pub enum ActivationError {
 }
 
 impl WindowTarget {
+    pub fn preview_source(self) -> Option<HWND> {
+        (self.available() && unsafe { IsIconic(self.handle) } == 0).then_some(self.handle)
+    }
+
     pub fn toggle(self) -> Result<(), ActivationError> {
         if !self.available() {
             return Err(ActivationError::Unavailable);

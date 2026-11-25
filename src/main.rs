@@ -12,6 +12,8 @@ mod dock;
 mod hotkey;
 #[cfg(windows)]
 mod overlay;
+#[cfg(windows)]
+mod preview;
 #[cfg(any(windows, test))]
 mod search;
 #[cfg(windows)]

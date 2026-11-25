@@ -16,3 +16,4 @@
 - Added an opt-in borderless Top Bar with the native clock and battery status.
 - Added active-display Dock placement and an optional pointer reveal strip.
 - Added a registered fallback for reserved Spotlight shortcuts, press-to-toggle and foreground restoration.
+- Added live DWM thumbnails for Dock window tiles on pointer hover.

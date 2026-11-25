@@ -4,6 +4,7 @@ use crate::{
     config::{self, DockMonitor},
     desktop::{self, WindowGroup},
     overlay::{self, Palette},
+    preview::{self, Preview},
     search::App,
     windows::{launch_shortcut, report_for, wide},
 };
@@ -15,7 +16,9 @@ use windows_sys::Win32::{
         Accessibility::*,
         Controls::*,
         HiDpi::GetDpiForWindow,
-        Input::KeyboardAndMouse::{ReleaseCapture, SetCapture},
+        Input::KeyboardAndMouse::{
+            ReleaseCapture, SetCapture, TME_HOVER, TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent,
+        },
         Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass},
         WindowsAndMessaging::*,
     },
@@ -70,8 +73,16 @@ struct State {
     auto_hide: bool,
     expanded: bool,
     menu_open: bool,
+    preview: Option<(HWND, Preview)>,
     palette: Palette,
     portuguese: bool,
+}
+
+impl State {
+    fn live_group(&self, id: u32) -> Option<&WindowGroup> {
+        let tile = id.checked_sub(FIRST_WINDOW)? as usize;
+        self.groups.get(tile.checked_sub(self.visible_pins)?)
+    }
 }
 
 impl Dock {
@@ -95,6 +106,7 @@ impl Dock {
             if RegisterClassW(&class) == 0 {
                 return Err(io::Error::last_os_error());
             }
+            let previews_available = preview::register().is_ok();
             let handle = CreateWindowExW(
                 overlay::EX_STYLE | WS_EX_TOPMOST | WS_EX_NOACTIVATE,
                 class_name.as_ptr(),
@@ -131,6 +143,7 @@ impl Dock {
                     auto_hide: settings.auto_hide,
                     expanded: !settings.auto_hide,
                     menu_open: false,
+                    preview: None,
                     palette,
                     portuguese,
                 }),
@@ -162,8 +175,8 @@ impl Dock {
                     return Err(io::Error::last_os_error());
                 }
                 if id >= FIRST_WINDOW
-                    && (*state).pins.len() > 1
-                    && SetWindowSubclass(button, Some(pin_button), 1, state as usize) == 0
+                    && (previews_available || (*state).pins.len() > 1)
+                    && SetWindowSubclass(button, Some(dock_button), 1, state as usize) == 0
                 {
                     return Err(io::Error::last_os_error());
                 }
@@ -231,7 +244,7 @@ unsafe fn repaint_buttons(state: *mut State) {
     }
 }
 
-unsafe extern "system" fn pin_button(
+unsafe extern "system" fn dock_button(
     button: HWND,
     message: u32,
     wp: WPARAM,
@@ -241,10 +254,31 @@ unsafe extern "system" fn pin_button(
 ) -> LRESULT {
     // The parent Dock owns this state until all child windows have been destroyed.
     unsafe {
+        if !matches!(
+            message,
+            WM_LBUTTONDOWN
+                | WM_LBUTTONDBLCLK
+                | WM_LBUTTONUP
+                | WM_MOUSEMOVE
+                | WM_MOUSEHOVER
+                | WM_MOUSELEAVE
+                | WM_CAPTURECHANGED
+                | WM_NCDESTROY
+        ) {
+            return DefSubclassProc(button, message, wp, lp);
+        }
         let state = reference as *mut State;
         let count = (*state).visible_pins;
         let id = GetDlgCtrlID(button) as u32;
         let parent = GetParent(button);
+        if matches!(message, WM_LBUTTONDOWN | WM_LBUTTONDBLCLK | WM_MOUSELEAVE)
+            && (*state)
+                .preview
+                .as_ref()
+                .is_some_and(|(source, _)| *source == button)
+        {
+            drop((*state).preview.take());
+        }
         match message {
             WM_LBUTTONDOWN | WM_LBUTTONDBLCLK if count > 1 => {
                 if let Some(from) = pin_index(id, count)
@@ -305,7 +339,33 @@ unsafe extern "system" fn pin_button(
                 }
             }
             WM_NCDESTROY => {
-                RemoveWindowSubclass(button, Some(pin_button), 1);
+                RemoveWindowSubclass(button, Some(dock_button), 1);
+            }
+            WM_MOUSEMOVE if (*state).preview.is_none() && (&*state).live_group(id).is_some() => {
+                let mut tracking = TRACKMOUSEEVENT {
+                    cbSize: size_of::<TRACKMOUSEEVENT>() as u32,
+                    dwFlags: TME_HOVER | TME_LEAVE,
+                    hwndTrack: button,
+                    dwHoverTime: 450,
+                };
+                TrackMouseEvent(&mut tracking);
+            }
+            WM_MOUSEHOVER if (*state).preview.is_none() && IsWindowVisible(button) != 0 => {
+                let Some(group) = (&*state).live_group(id) else {
+                    return DefSubclassProc(button, message, wp, lp);
+                };
+                let target = group
+                    .windows
+                    .iter()
+                    .find(|window| window.active && !window.minimised)
+                    .or_else(|| group.windows.iter().find(|window| !window.minimised))
+                    .map(|window| window.target);
+                if let Some(target) = target
+                    && let Some(preview) =
+                        Preview::open(parent, button, target, (*state).palette.background)
+                {
+                    (*state).preview = Some((button, preview));
+                }
             }
             _ => {}
         }
@@ -346,6 +406,7 @@ impl Drop for Dock {
             for hook in self.hooks.drain(..) {
                 UnhookWinEvent(hook);
             }
+            drop(self.state.preview.take());
             DestroyWindow(self.handle);
             DeleteObject(self.state.brush);
             DeleteObject(self.state.font);
@@ -414,6 +475,7 @@ unsafe fn dock_display(state: *mut State) -> Option<(HMONITOR, MONITORINFO)> {
 
 unsafe fn refresh(hwnd: HWND, state: *mut State) {
     unsafe {
+        drop((*state).preview.take());
         let Some((monitor, display)) = dock_display(state) else {
             ShowWindow(hwnd, SW_HIDE);
             return;
