@@ -6,6 +6,7 @@ Foundation and the first native application are implemented. Desktop Experience 
 
 - `src/windows.rs` owns the borderless Spotlight window lifecycle, keyboard navigation, focus dismissal and shortcut registration.
 - `src/overlay.rs` shares the native overlay styles, palette and DPI scaling between Spotlight and Dock.
+- `src/hotkey.rs` owns `RegisterHotKey` registration and switches to Ctrl+Alt+Space when Windows reserves Win+Space.
 - `src/search.rs` discovers Start menu desktop shortcuts and ranks local matches.
 - `src/calculator.rs` evaluates bounded arithmetic expressions entered in Spotlight.
 - `src/desktop.rs` discovers eligible windows and their display, detects fullscreen geometry and switches on explicit selection.
@@ -40,6 +41,10 @@ The launcher, benchmark, calculator and window-switcher checkpoints are `e86dc9a
 
 The binary needs no elevation and makes no persistent changes to Windows. Dismiss standalone Spotlight or use **Exit** on the Dock to stop the process and release native hooks. Pass `--safe-mode` to bypass configuration and start Spotlight alone. Rename the configuration file to recover defaults. Portable removal consists of closing the process and removing the executable, with optional removal of the local configuration directory.
 
+## Shortcut compatibility
+
+The current Windows build returned Win32 error 1409 on a direct Win+Space registration probe and accepted Ctrl+Alt+Space. An experimental low-level capture showed Spotlight but could not reliably give the search field foreground focus. The published runtime uses `RegisterHotKey` and leaves the reserved chord to Windows. A native desktop test with `-Hotkey` verifies the fallback, suppression of key repeats, typing without a click, repeat-to-dismiss and restoration of focus.
+
 ## Next task
 
-Resolve the observed Win+Space registration conflict and validate hotkey focus. Then extract and cache native monochrome Dock icons, add previews and develop the media Island.
+Extract and cache native monochrome Dock icons, add native previews and develop the media Island. Revisit Win+Space if Windows provides a supported registration or focus path for the reserved chord.

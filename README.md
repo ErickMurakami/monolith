@@ -21,7 +21,7 @@ Launch with `--dock` to show the experimental Dock. It floats above the primary 
 
 Launch with `--top-bar` to show a borderless status bar on the primary display. It displays the local clock and battery status when Windows reports a battery. Right-click the bar to open Spotlight or exit Monolith. It hides during fullscreen use.
 
-Monolith attempts to register Win+Space. If Windows reserves that combination, the search field identifies the conflict in its placeholder and the launcher remains accessible. To change the binding, create `%LOCALAPPDATA%\Monolith\config.toml` and restart Monolith.
+Monolith tries Win+Space first. If Windows reports that chord is already registered, Monolith registers Ctrl+Alt+Space as its fallback and displays it in the search placeholder. With `--resident`, the registered shortcut opens Spotlight and a second press dismisses it. Escape returns focus to the previous window when Windows permits it. To change the binding, create `%LOCALAPPDATA%\Monolith\config.toml` and restart Monolith.
 
 ```toml
 theme = "dark"              # dark, light

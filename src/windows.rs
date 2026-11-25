@@ -1,8 +1,9 @@
 use crate::{
     calculator::{self, CalculationError},
-    config::{self, Language, Shortcut},
+    config::{self, Language},
     desktop::{self, ActivationError},
     dock::{self, Dock},
+    hotkey::{self, Hotkey, Notice},
     overlay::{self, Palette},
     search::{self, App},
     top_bar::TopBar,
@@ -23,7 +24,6 @@ use windows_sys::Win32::{
     },
 };
 
-const HOTKEY: i32 = 1;
 const EDIT: usize = 100;
 const RESULTS: usize = 101;
 const RESULT_LIMIT: usize = 60;
@@ -47,6 +47,7 @@ struct State {
     palette: Palette,
     portuguese: bool,
     can_hide: bool,
+    previous_foreground: HWND,
 }
 
 impl Drop for State {
@@ -136,6 +137,7 @@ pub fn run() -> io::Result<()> {
             palette,
             portuguese: matches!(settings.language, Language::Portuguese),
             can_hide: false,
+            previous_foreground: null_mut(),
         });
         let hwnd = CreateWindowExW(
             overlay::EX_STYLE | WS_EX_TOPMOST,
@@ -160,6 +162,7 @@ pub fn run() -> io::Result<()> {
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, state_ptr as isize);
         let show_dock = !safe && (settings.dock || args.iter().any(|arg| arg == "--dock"));
         let show_top_bar = !safe && (settings.top_bar || args.iter().any(|arg| arg == "--top-bar"));
+        let hotkey = Hotkey::bind(hwnd, settings.shortcut);
         let order_path = config_path.with_file_name("dock-order.toml");
         let pins = if show_dock && !settings.dock_pins.is_empty() {
             let apps = (*state_ptr)
@@ -175,7 +178,7 @@ pub fn run() -> io::Result<()> {
             hwnd,
             instance,
             state_ptr,
-            settings.shortcut,
+            &hotkey,
             resident,
             show_dock.then_some(dock::Settings {
                 pins,
@@ -198,7 +201,7 @@ unsafe fn run_window(
     hwnd: HWND,
     instance: *mut c_void,
     state: *mut State,
-    shortcut: Shortcut,
+    hotkey: &Hotkey,
     resident: bool,
     dock_settings: Option<dock::Settings>,
     show_top_bar: bool,
@@ -251,25 +254,19 @@ unsafe fn run_window(
         SendMessageW(edit, EM_LIMITTEXT, 256, 0);
         layout(hwnd, state);
 
-        let modifiers = match shortcut {
-            Shortcut::WinSpace => Some(MOD_WIN),
-            Shortcut::CtrlAltSpace => Some(MOD_CONTROL | MOD_ALT),
-            Shortcut::Disabled => None,
-        };
-        let registered = modifiers.is_some_and(|mods| {
-            RegisterHotKey(hwnd, HOTKEY, mods | MOD_NOREPEAT, VK_SPACE.into()) != 0
-        });
-        if modifiers.is_some() && !registered {
+        if let Some(notice) = &hotkey.notice {
+            let detail = match (notice, (*state).portuguese) {
+                (Notice::Alternate, _) => "Ctrl+Alt+Space".to_owned(),
+                (Notice::Unavailable(error), true) => format!("atalho indisponível, Win32 {error}"),
+                (Notice::Unavailable(error), false) => {
+                    format!("shortcut unavailable, Win32 {error}")
+                }
+            };
             SendMessageW(
                 edit,
                 EM_SETCUEBANNER,
                 1,
-                wide(if (*state).portuguese {
-                    "Buscar aplicativos (atalho indisponível)"
-                } else {
-                    "Search applications (shortcut unavailable)"
-                })
-                .as_ptr() as isize,
+                wide(&format!("{cue} ({detail})")).as_ptr() as isize,
             );
         }
         let dock = if let Some(settings) = dock_settings {
@@ -300,7 +297,7 @@ unsafe fn run_window(
         } else {
             None
         };
-        (*state).can_hide = dock.is_some() || top_bar.is_some() || (resident && registered);
+        (*state).can_hide = dock.is_some() || top_bar.is_some() || (resident && hotkey.available());
         if !(*state).can_hide {
             show(hwnd, state);
         }
@@ -312,17 +309,22 @@ unsafe fn run_window(
                 0 => return Ok(()),
                 _ => {}
             }
-            if msg.hwnd == hwnd
-                && (msg.message == dock::SHOW_SPOTLIGHT
-                    || (msg.message == WM_HOTKEY && msg.wParam == HOTKEY as usize))
-            {
+            if msg.hwnd == hwnd && msg.message == dock::SHOW_SPOTLIGHT {
                 show(hwnd, state);
+                continue;
+            }
+            if msg.hwnd == hwnd && msg.message == WM_HOTKEY && msg.wParam == hotkey::ID as usize {
+                if IsWindowVisible(hwnd) != 0 && GetForegroundWindow() == hwnd {
+                    dismiss(hwnd, state, true);
+                } else {
+                    show(hwnd, state);
+                }
                 continue;
             }
             if msg.message == WM_KEYDOWN && (msg.hwnd == edit || msg.hwnd == results) {
                 match msg.wParam as u16 {
                     VK_ESCAPE => {
-                        dismiss(hwnd, state);
+                        dismiss(hwnd, state, true);
                         continue;
                     }
                     VK_F5 => {
@@ -369,6 +371,7 @@ unsafe fn show(hwnd: HWND, state: *mut State) {
             (*state).apps = Some(search::discover(roots()));
         }
         if IsWindowVisible(hwnd) == 0 {
+            (*state).previous_foreground = GetForegroundWindow();
             refresh(state);
             let foreground = GetForegroundWindow();
             let monitor = if foreground.is_null() {
@@ -414,8 +417,17 @@ unsafe fn show(hwnd: HWND, state: *mut State) {
     }
 }
 
-unsafe fn dismiss(hwnd: HWND, state: *mut State) {
+unsafe fn dismiss(hwnd: HWND, state: *mut State, return_focus: bool) {
     unsafe {
+        let previous = std::mem::replace(&mut (*state).previous_foreground, null_mut());
+        if return_focus
+            && GetForegroundWindow() == hwnd
+            && previous != hwnd
+            && IsWindowVisible(previous) != 0
+            && IsIconic(previous) == 0
+        {
+            SetForegroundWindow(previous);
+        }
         if (*state).can_hide {
             (*state).desktop = None;
             ShowWindow(hwnd, SW_HIDE);
@@ -687,7 +699,7 @@ unsafe fn switch_window(hwnd: HWND, state: *mut State, index: usize) {
         };
         let target = window.target;
         match target.activate() {
-            Ok(()) => dismiss(hwnd, state),
+            Ok(()) => dismiss(hwnd, state, false),
             Err(error) => {
                 (*state).desktop = None;
                 refresh(state);
@@ -710,7 +722,6 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
         let state = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut State;
         match msg {
             WM_DESTROY => {
-                UnregisterHotKey(hwnd, HOTKEY);
                 PostQuitMessage(0);
                 0
             }
@@ -725,7 +736,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                     && foreground != hwnd
                     && GetAncestor(foreground, GA_ROOTOWNER) != hwnd
                 {
-                    dismiss(hwnd, state);
+                    dismiss(hwnd, state, false);
                 }
                 0
             }

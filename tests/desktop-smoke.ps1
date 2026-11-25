@@ -5,6 +5,7 @@ param(
     [switch]$Spotlight,
     [switch]$TopBar,
     [switch]$AutoHide,
+    [switch]$Hotkey,
     [string]$Capture
 )
 
@@ -22,6 +23,9 @@ public static class DesktopSmoke {
     [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hwnd);
     [DllImport("user32.dll")] public static extern uint GetDoubleClickTime();
     [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint process);
+    [DllImport("user32.dll")] public static extern IntPtr GetKeyboardLayout(uint thread);
+    [DllImport("user32.dll")] public static extern bool RegisterHotKey(IntPtr origin, int id, uint modifiers, uint key);
+    [DllImport("user32.dll")] public static extern bool UnregisterHotKey(IntPtr origin, int id);
     [DllImport("user32.dll", EntryPoint="GetWindowLongW")] public static extern int Style(IntPtr hwnd, int index);
     [DllImport("user32.dll", CharSet=CharSet.Unicode)]
     public static extern IntPtr FindWindowEx(IntPtr parent, IntPtr after, string cls, string title);
@@ -52,12 +56,47 @@ public static class DesktopSmoke {
         public uint Data, Flags, Time;
         public UIntPtr ExtraInfo;
     }
-    [StructLayout(LayoutKind.Sequential)] struct Input { public uint Type; public MouseInput Mouse; }
+    [StructLayout(LayoutKind.Sequential)] struct KeyboardInput {
+        public ushort Key, Scan;
+        public uint Flags, Time;
+        public UIntPtr ExtraInfo;
+    }
+    [StructLayout(LayoutKind.Explicit)] struct InputPayload {
+        [FieldOffset(0)] public MouseInput Mouse;
+        [FieldOffset(0)] public KeyboardInput Keyboard;
+    }
+    [StructLayout(LayoutKind.Sequential)] struct Input {
+        public uint Type;
+        public InputPayload Data;
+        public MouseInput Mouse { set { Data.Mouse = value; } }
+    }
     [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr hwnd, out Rect rect);
     [DllImport("user32.dll")] static extern bool GetCursorPos(out Point point);
     [DllImport("user32.dll")] static extern bool SetCursorPos(int x, int y);
     [DllImport("user32.dll")] static extern IntPtr WindowFromPoint(Point point);
     [DllImport("user32.dll")] static extern uint SendInput(uint count, Input[] events, int size);
+    static Input Key(ushort key, uint flags) {
+        return new Input { Type = 1, Data = new InputPayload {
+            Keyboard = new KeyboardInput { Key = key, Flags = flags },
+        } };
+    }
+    public static bool PressChord(ushort[] modifiers, ushort key, bool repeated) {
+        var events = new System.Collections.Generic.List<Input>();
+        var release = new System.Collections.Generic.List<Input>();
+        foreach (ushort modifier in modifiers) events.Add(Key(modifier, 0));
+        events.Add(Key(key, 0));
+        if (repeated) events.Add(Key(key, 0));
+        release.Add(Key(key, 2));
+        for (int i = modifiers.Length - 1; i >= 0; i--) release.Add(Key(modifiers[i], 2));
+        events.AddRange(release);
+        int size = Marshal.SizeOf(typeof(Input));
+        if (SendInput((uint)events.Count, events.ToArray(), size) == events.Count) return true;
+        SendInput((uint)release.Count, release.ToArray(), size);
+        return false;
+    }
+    public static bool TypeVerificationDigit(IntPtr window) {
+        return GetForegroundWindow() == window && PressChord(new ushort[0], 0x37, false);
+    }
     public static int Left(IntPtr target) {
         return Bounds(target)[0];
     }
@@ -183,6 +222,88 @@ function Focus-Fixture($Form) {
         [DesktopSmoke]::GetForegroundWindow() -eq $Form.Handle
     } 'Fixture could not receive foreground focus.'
     $Form.TopMost = $false
+}
+
+function Invoke-HotkeySmoke($Application) {
+    $fixture = New-Object Windows.Forms.Form
+    $foreground = New-Object Windows.Forms.Form
+    $configRoot = Join-Path ([IO.Path]::GetTempPath()) ('monolith-shortcut-' + [guid]::NewGuid().ToString('N'))
+    $oldLocal = $env:LOCALAPPDATA
+    $launcher = $null
+    $window = [IntPtr]::Zero
+    $reserved = $false
+    try {
+        $env:LOCALAPPDATA = $configRoot
+        # If Windows allows Win+Space, occupy it temporarily to exercise the real fallback.
+        $reserved = [DesktopSmoke]::RegisterHotKey([IntPtr]::Zero, 810, 0x4008, 0x20)
+        $fixture.Text = 'Global shortcut verification'
+        $fixture.Show()
+        Focus-Fixture $fixture
+        $owner = [uint32]0
+        $thread = [DesktopSmoke]::GetWindowThreadProcessId($fixture.Handle, [ref]$owner)
+        $layout = [DesktopSmoke]::GetKeyboardLayout($thread)
+        $launcher = Start-Process -FilePath $Application -ArgumentList '--resident' -PassThru
+        Wait-Until { [DesktopSmoke]::FindClass('MonolithSpotlight') -ne [IntPtr]::Zero } 'The resident Spotlight was not created.'
+        $window = [DesktopSmoke]::FindClass('MonolithSpotlight')
+        Wait-Until { [DesktopSmoke]::FindChild($window, 'Edit') -ne [IntPtr]::Zero } 'The resident Spotlight was not ready.'
+        if ([DesktopSmoke]::IsWindowVisible($window)) { throw 'Resident Spotlight should start hidden.' }
+        $alternate = [uint16[]]@(0xA2,0xA4)
+        foreach ($state in 'normal','maximised','minimised','fullscreen') {
+            $target = $fixture
+            if ($state -eq 'maximised') {
+                $fixture.WindowState = 'Maximized'
+            } elseif ($state -eq 'minimised') {
+                $fixture.WindowState = 'Minimized'
+                $foreground.Text = 'Foreground after minimising the test window'
+                $foreground.Show()
+                $target = $foreground
+            } elseif ($state -eq 'fullscreen') {
+                $fixture.WindowState = 'Normal'
+                $fixture.FormBorderStyle = 'None'
+                $fixture.Bounds = [Windows.Forms.Screen]::PrimaryScreen.Bounds
+            }
+            Focus-Fixture $target
+            if (![DesktopSmoke]::PressChord($alternate, 0x20, $true)) { throw "Could not send the shortcut in $state." }
+            Wait-Until { [DesktopSmoke]::IsWindowVisible($window) } "The global shortcut did not show Spotlight in $state."
+            Wait-Until { [DesktopSmoke]::GetForegroundWindow() -eq $window } "Spotlight opened without foreground focus in $state."
+            $edit = [DesktopSmoke]::FindChild($window, 'Edit')
+            if (![DesktopSmoke]::TypeVerificationDigit($window)) { throw 'Could not type into the focused Spotlight.' }
+            Wait-Until {
+                $entry = New-Object Text.StringBuilder 32
+                [void][DesktopSmoke]::Read($edit, 0xD, [UIntPtr]::new([uint32]32), $entry)
+                $entry.ToString() -eq '7'
+            } 'The search field did not receive typing without a click.'
+            if ($state -eq 'maximised') {
+                if (![DesktopSmoke]::PressChord($alternate, 0x20, $false)) { throw 'Could not send the toggle chord.' }
+            } elseif (![DesktopSmoke]::PressChord([uint16[]]@(), 0x1B, $false)) {
+                throw 'Could not send Escape.'
+            }
+            Wait-Until {
+                ![DesktopSmoke]::IsWindowVisible($window) -and
+                [DesktopSmoke]::GetForegroundWindow() -eq $target.Handle
+            } "Spotlight did not dismiss and return focus in $state."
+        }
+        if ([DesktopSmoke]::GetKeyboardLayout($thread) -ne $layout) { throw 'The keyboard layout changed.' }
+        [void][DesktopSmoke]::Post($window, 0x10, [UIntPtr]::Zero, [IntPtr]::Zero)
+        Wait-Until { $launcher.HasExited } 'The resident process did not exit.'
+        'Native fallback, repeat suppression, fullscreen activation, direct typing and focus restore passed.'
+    } finally {
+        if ($launcher -and !$launcher.HasExited) {
+            if ($window -ne [IntPtr]::Zero) { [void][DesktopSmoke]::Post($window, 0x10, [UIntPtr]::Zero, [IntPtr]::Zero) }
+            if (!$launcher.WaitForExit(2000)) { Stop-Process -InputObject $launcher }
+        }
+        if ($reserved) { [void][DesktopSmoke]::UnregisterHotKey([IntPtr]::Zero, 810) }
+        $foreground.Dispose()
+        $fixture.Dispose()
+        $env:LOCALAPPDATA = $oldLocal
+        if ([IO.Directory]::Exists($configRoot)) {
+            $resolved = (Resolve-Path -LiteralPath $configRoot).Path
+            $parent = (Resolve-Path -LiteralPath ([IO.Path]::GetTempPath())).Path.TrimEnd('\')
+            if ((Split-Path -Parent $resolved) -eq $parent -and (Split-Path -Leaf $resolved) -match '^monolith-shortcut-[0-9a-f]{32}$') {
+                [IO.Directory]::Delete($resolved, $true)
+            }
+        }
+    }
 }
 
 function Invoke-AutoHideSmoke($Application) {
@@ -548,12 +669,13 @@ function Invoke-DockSmoke($Application) {
 }
 
 $originalDpi = [DesktopSmoke]::SetThreadDpiAwarenessContext([IntPtr]::new(-4))
-if ($Dock -or $Pins -or $Spotlight -or $TopBar -or $AutoHide) {
+if ($Dock -or $Pins -or $Spotlight -or $TopBar -or $AutoHide -or $Hotkey) {
     try {
         if ($Pins) { Invoke-PinSmoke (Resolve-Path $Binary) }
         elseif ($Spotlight) { Invoke-SpotlightSmoke (Resolve-Path $Binary) }
         elseif ($TopBar) { Invoke-TopBarSmoke (Resolve-Path $Binary) }
         elseif ($AutoHide) { Invoke-AutoHideSmoke (Resolve-Path $Binary) }
+        elseif ($Hotkey) { Invoke-HotkeySmoke (Resolve-Path $Binary) }
         else { Invoke-DockSmoke (Resolve-Path $Binary) }
     } finally {
         if ($originalDpi -ne [IntPtr]::Zero) {
