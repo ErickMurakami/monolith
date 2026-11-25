@@ -13,4 +13,6 @@ Keep the foreground workload, power plan and background applications consistent 
 
 Available memory and commit describe the whole system. Per-process working set includes shared pages. Private working set counts private resident pages. Private bytes measures private committed virtual memory. The process CPU counter uses one logical CPU as 100%; divide by the logical processor count for its share of total capacity.
 
-This script measures sampled memory, CPU and I/O. Startup, input latency, GPU, energy and feature-specific scenarios require separate workloads and instrumentation.
+GPU values describe the busiest WDDM GPU engine per process or across the system. The system figure adds process utilisation for each hardware engine and takes the highest engine value. These figures help compare samples and are independent of CPU measurements. A null value means no useful GPU counter data was available. The methodology follows the busiest-engine interpretation used by [Windows Task Manager](https://devblogs.microsoft.com/directx/gpus-in-the-task-manager/).
+
+This script measures sampled memory, CPU, GPU and I/O. Startup latency, input latency and energy require separate workloads and instrumentation.

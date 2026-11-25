@@ -12,6 +12,7 @@ Foundation and the first native application are implemented. Desktop Experience 
 - `src/dock.rs` presents ordered, configurable Start menu pins and open windows on the primary display. The Dock handles live updates, minimisation, restoration and fullscreen suppression.
 - `src/config.rs` validates TOML, preserves invalid files and supports a safe start.
 - `benchmarks/measure.ps1` samples Windows and Monolith memory, CPU and I/O.
+- The benchmark also records the busiest GPU engine from WDDM counters when available.
 - `docs/spotlight.png` shows a calculation in the running borderless Spotlight release build.
 - `docs/dock.png` is a cropped capture of the running Dock with a verification window selected.
 
@@ -28,6 +29,8 @@ Checked the declared licences of all locked dependencies. OSV returned zero advi
 Six samples at nominal two-second intervals per scenario. Windows CPU was 74-100% during baseline sampling and 94-100% with the launcher visible while development tools were compiling. The launcher recorded 1.36-1.39 MiB of private working set, 13.13-13.17 MiB of total working set and 1.86-1.91 MiB of private bytes. All six launcher CPU and I/O counter readings were zero at the sampled resolution. These results describe this run. Repeat matched baseline, visible and resident scenarios after background work settles before drawing system-wide conclusions.
 
 The Dock was sampled in two baseline/Dock pairs with six samples per scenario at nominal one-second intervals. The Dock was visible with Spotlight hidden. Across both runs, the process used 1.00-1.02 MiB of private working set, 9.43-9.45 MiB of total working set and 1.45-1.59 MiB of private bytes. Sampled Monolith CPU and I/O counters were zero. Baseline system CPU ranged from 0% to 35%, and Dock system CPU from 0% to 49%. This short measurement does not establish a system-wide CPU impact.
+
+After the borderless Spotlight and pin-reordering changes, two matched idle runs provided twelve samples per scenario. The Dock alone used 1.11-1.13 MiB of private working set, 9.90-9.93 MiB of total working set and 1.60-1.74 MiB of private bytes. Standalone Spotlight used 1.37-1.41 MiB, 13.33-13.36 MiB and 1.88-1.91 MiB respectively. Monolith CPU, GPU and I/O counters read zero at sample resolution. System busiest-engine GPU ranges were 1-6% at baseline, 2-4% with the Dock and 1-3% with Spotlight. System CPU ranges overlapped across the scenarios.
 
 ## Git and recovery
 
