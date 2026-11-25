@@ -4,6 +4,7 @@ use crate::{
     desktop::{self, ActivationError},
     dock::{self, Dock},
     hotkey::{self, Hotkey, Notice},
+    island::Island,
     overlay::{self, Palette},
     search::{self, App},
     top_bar::TopBar,
@@ -48,6 +49,12 @@ struct State {
     portuguese: bool,
     can_hide: bool,
     previous_foreground: HWND,
+}
+
+struct SurfaceOptions {
+    dock: Option<dock::Settings>,
+    top_bar: bool,
+    island: bool,
 }
 
 impl Drop for State {
@@ -162,6 +169,7 @@ pub fn run() -> io::Result<()> {
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, state_ptr as isize);
         let show_dock = !safe && (settings.dock || args.iter().any(|arg| arg == "--dock"));
         let show_top_bar = !safe && (settings.top_bar || args.iter().any(|arg| arg == "--top-bar"));
+        let show_island = !safe && (settings.island || args.iter().any(|arg| arg == "--island"));
         let hotkey = Hotkey::bind(hwnd, settings.shortcut);
         let order_path = config_path.with_file_name("dock-order.toml");
         let pins = if show_dock && !settings.dock_pins.is_empty() {
@@ -180,14 +188,17 @@ pub fn run() -> io::Result<()> {
             state_ptr,
             &hotkey,
             resident,
-            show_dock.then_some(dock::Settings {
-                pins,
-                order_path,
-                monitor: settings.dock_monitor,
-                auto_hide: settings.dock_auto_hide,
-                original_icons: settings.dock_original_icons,
-            }),
-            show_top_bar,
+            SurfaceOptions {
+                dock: show_dock.then_some(dock::Settings {
+                    pins,
+                    order_path,
+                    monitor: settings.dock_monitor,
+                    auto_hide: settings.dock_auto_hide,
+                    original_icons: settings.dock_original_icons,
+                }),
+                top_bar: show_top_bar,
+                island: show_island,
+            },
         );
         if IsWindow(hwnd) != 0 {
             DestroyWindow(hwnd);
@@ -204,8 +215,7 @@ unsafe fn run_window(
     state: *mut State,
     hotkey: &Hotkey,
     resident: bool,
-    dock_settings: Option<dock::Settings>,
-    show_top_bar: bool,
+    surfaces: SurfaceOptions,
 ) -> io::Result<()> {
     unsafe {
         let edit = CreateWindowExW(
@@ -270,7 +280,7 @@ unsafe fn run_window(
                 wide(&format!("{cue} ({detail})")).as_ptr() as isize,
             );
         }
-        let dock = if let Some(settings) = dock_settings {
+        let dock = if let Some(settings) = surfaces.dock {
             match Dock::new(
                 instance,
                 hwnd,
@@ -287,7 +297,7 @@ unsafe fn run_window(
         } else {
             None
         };
-        let top_bar = if show_top_bar {
+        let top_bar = if surfaces.top_bar {
             match TopBar::new(instance, hwnd, (*state).palette, (*state).portuguese) {
                 Ok(bar) => Some(bar),
                 Err(error) => {
@@ -298,7 +308,26 @@ unsafe fn run_window(
         } else {
             None
         };
-        (*state).can_hide = dock.is_some() || top_bar.is_some() || (resident && hotkey.available());
+        let island = if surfaces.island {
+            match Island::new(
+                instance,
+                hwnd,
+                top_bar.as_ref().map_or(null_mut(), TopBar::handle),
+                (*state).palette,
+                (*state).portuguese,
+            ) {
+                Ok(island) => Some(island),
+                Err(error) => {
+                    report(&format!("Could not open the Island ({error})"));
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        (*state).can_hide = dock.is_some()
+            || top_bar.is_some()
+            || ((resident || island.is_some()) && hotkey.available());
         if !(*state).can_hide {
             show(hwnd, state);
         }

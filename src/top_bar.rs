@@ -43,6 +43,10 @@ struct State {
 }
 
 impl TopBar {
+    pub fn handle(&self) -> HWND {
+        self.hwnd
+    }
+
     pub fn new(
         instance: *mut c_void,
         launcher: HWND,
@@ -289,7 +293,7 @@ unsafe fn refresh_status(hwnd: HWND, state: *mut State) {
     }
 }
 
-unsafe fn menu(hwnd: HWND, launcher: HWND, portuguese: bool) {
+pub(crate) unsafe fn menu(hwnd: HWND, launcher: HWND, portuguese: bool) {
     unsafe {
         let menu = CreatePopupMenu();
         if menu.is_null() {

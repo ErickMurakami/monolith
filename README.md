@@ -21,6 +21,8 @@ Launch with `--dock` to show the experimental Dock. It floats along the bottom o
 
 Launch with `--top-bar` to show a borderless status bar on the primary display. It displays the local clock and battery status when Windows reports a battery. Right-click the bar to open Spotlight or exit Monolith. It hides during fullscreen use.
 
+Launch with `--island` to display the title and artist from the current Windows media session. Click the media label to expand play, pause, previous and next controls where the source supports them. Use `--island --top-bar` to place it in the centre of the status bar. The Island hides during fullscreen use and when Windows has no matching media session.
+
 Monolith tries Win+Space first. If Windows reports that chord is already registered, Monolith registers Ctrl+Alt+Space as its fallback and displays it in the search placeholder. With `--resident`, the registered shortcut opens Spotlight and a second press dismisses it. Escape returns focus to the previous window when Windows permits it. To change the binding, create `%LOCALAPPDATA%\Monolith\config.toml` and restart Monolith.
 
 ```toml
@@ -33,6 +35,7 @@ dock_monitor = "primary"           # primary, active
 dock_auto_hide = false             # reveal at the bottom of the work area
 dock_original_icons = false       # keep the original Shell colours when true
 top_bar = false            # set true to opt in
+island = false             # set true to opt in
 ```
 
 Pins are resolved from local Start menu shortcuts. Missing and repeated names are skipped. Pins take the first available slots in the Dock. Drag a pin onto another pin to reorder it. The order is saved in `dock-order.toml` next to the configuration and takes precedence over the list. Remove the order file to restore configuration order. Windows Shell icons are monochrome by default, with names available through native tooltips and accessibility. A tile uses its text label when the Shell cannot supply an icon.
@@ -42,7 +45,7 @@ Invalid settings are preserved on disk and defaults are loaded. Rename the file 
 ## Project status
 
 - Implemented in the experimental build. Native Win32 launcher, local ranking of desktop shortcuts and open windows, calculator, opt-in running-window Dock, configurable shortcut, light and dark themes, and safe start.
-- Planned. Simultaneous per-display Docks, additional Top Bar modules, media Island, workspaces, Files, indexing, optimisation, Android continuity, installer and release validation.
+- Planned. Simultaneous per-display Docks, additional Top Bar modules, Island artwork and progress, workspaces, Files, indexing, optimisation, Android continuity, installer and release validation.
 - Unsupported by the current launcher. UWP app discovery, file search, web search and arbitrary command execution.
 
 The UI runs on the Win32 message queue and renders on demand. Spotlight builds its catalog on first use. Search and configuration are independent of Win32, with unit tests for ranking, discovery and recovery.
@@ -56,3 +59,5 @@ See [project status](MONOLITH_STATUS.md) and [benchmark procedure](benchmarks/RE
 ![Cropped Dock capture showing the monochrome Shell icon for a verification shortcut](docs/dock.png)
 
 ![Cropped Top Bar capture showing system power and clock](docs/top-bar.png)
+
+![Dynamic Island showing a live local media session and transport controls](docs/island.png)

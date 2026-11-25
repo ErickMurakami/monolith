@@ -18,6 +18,7 @@ pub struct Config {
     pub dock_auto_hide: bool,
     pub dock_original_icons: bool,
     pub top_bar: bool,
+    pub island: bool,
 }
 
 #[derive(Debug, Default, Deserialize, PartialEq, Eq)]
@@ -142,6 +143,7 @@ mod tests {
         assert!(matches!(config.shortcut, Shortcut::Disabled));
         assert!(!config.dock);
         assert!(!config.top_bar);
+        assert!(!config.island);
         assert!(issue.is_none());
     }
 

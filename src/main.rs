@@ -13,6 +13,10 @@ mod hotkey;
 #[cfg(windows)]
 mod icons;
 #[cfg(windows)]
+mod island;
+#[cfg(windows)]
+mod media;
+#[cfg(windows)]
 mod overlay;
 #[cfg(windows)]
 mod preview;

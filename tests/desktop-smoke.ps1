@@ -7,6 +7,7 @@ param(
     [switch]$AutoHide,
     [switch]$Hotkey,
     [switch]$Preview,
+    [switch]$HelpersOnly,
     [string]$Capture
 )
 
@@ -769,6 +770,7 @@ function Invoke-DockSmoke($Application) {
     }
 }
 
+if ($HelpersOnly) { return }
 $originalDpi = [DesktopSmoke]::SetThreadDpiAwarenessContext([IntPtr]::new(-4))
 if ($Dock -or $Pins -or $Spotlight -or $TopBar -or $AutoHide -or $Hotkey -or $Preview) {
     try {
