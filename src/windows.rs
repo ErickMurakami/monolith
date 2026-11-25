@@ -1,4 +1,5 @@
 use crate::{
+    calculator::{self, CalculationError},
     config::{self, Language, Shortcut, Theme},
     search::{self, App},
 };
@@ -393,14 +394,21 @@ unsafe fn refresh(state: *mut State) {
         let Some(apps) = (*state).apps.as_ref() else {
             return;
         };
-        let hits = search::search(apps, &String::from_utf16_lossy(&query[..len as usize]), 60);
+        let query = String::from_utf16_lossy(&query[..len as usize]);
         SendMessageW(results, WM_SETREDRAW, 0, 0);
         SendMessageW(results, LB_RESETCONTENT, 0, 0);
         (*state).matches.clear();
-        for index in hits {
-            let label = wide(&apps[index].name);
-            if SendMessageW(results, LB_ADDSTRING, 0, label.as_ptr() as isize) >= 0 {
-                (*state).matches.push(index);
+        if let Some(expression) = query.trim_start().strip_prefix('=') {
+            if !expression.trim().is_empty() {
+                let label = wide(&calculation_label(expression, (*state).portuguese));
+                SendMessageW(results, LB_ADDSTRING, 0, label.as_ptr() as isize);
+            }
+        } else {
+            for index in search::search(apps, &query, 60) {
+                let label = wide(&apps[index].name);
+                if SendMessageW(results, LB_ADDSTRING, 0, label.as_ptr() as isize) >= 0 {
+                    (*state).matches.push(index);
+                }
             }
         }
         if !(*state).matches.is_empty() {
@@ -408,6 +416,21 @@ unsafe fn refresh(state: *mut State) {
         }
         SendMessageW(results, WM_SETREDRAW, 1, 0);
         InvalidateRect(results, std::ptr::null(), 1);
+    }
+}
+
+fn calculation_label(expression: &str, portuguese: bool) -> String {
+    match calculator::calculate(expression) {
+        Ok(value) => value.to_string(),
+        Err(error) => match (error, portuguese) {
+            (CalculationError::Syntax, false) => "Invalid expression",
+            (CalculationError::Syntax, true) => "Express\u{e3}o inv\u{e1}lida",
+            (CalculationError::DivisionByZero, false) => "Division by zero",
+            (CalculationError::DivisionByZero, true) => "Divis\u{e3}o por zero",
+            (CalculationError::OutOfRange, false) => "Result out of range",
+            (CalculationError::OutOfRange, true) => "Resultado fora do intervalo",
+        }
+        .into(),
     }
 }
 

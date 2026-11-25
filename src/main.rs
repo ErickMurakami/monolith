@@ -1,6 +1,8 @@
 #![cfg_attr(all(windows, not(test)), windows_subsystem = "windows")]
 
 #[cfg(any(windows, test))]
+mod calculator;
+#[cfg(any(windows, test))]
 mod config;
 #[cfg(any(windows, test))]
 mod search;

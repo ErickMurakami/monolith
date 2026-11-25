@@ -13,6 +13,8 @@ cargo build --locked --release
 
 Type an application name, use the arrow keys to select a match, and press Enter or double-click to open it. Escape closes the default session. Pass `--resident` to keep the launcher available after Escape when its global shortcut registered successfully. Close its window to quit. Use `--safe-mode` to start with defaults and the global shortcut disabled.
 
+Start a query with `=` to calculate locally. Try `=(12 + 3) / 2`. The calculator supports decimal numbers with a decimal point, parentheses, addition, subtraction, multiplication and division.
+
 Monolith attempts to register Win+Space. Windows can reserve that combination. If it is unavailable, the window stays accessible and reports the conflict in its title. To change the binding, create `%LOCALAPPDATA%\Monolith\config.toml` and restart Monolith.
 
 ```toml
