@@ -27,6 +27,8 @@ Launch with `--control-center` or use the Top Bar menu to open a borderless pane
 
 Launch with `--mission-control` or select **Mission Control** from the Dock or Top Bar context menu. The borderless overview shows open windows with live Windows thumbnails where available. Click a window or select it with the arrow keys and Enter. Use Page Up and Page Down for more windows and F5 to refresh the inventory. **Windows Task View** opens the original desktop manager for creating, arranging and moving windows between desktops.
 
+Launch with `--files` or select **Files** from a shell context menu. Pass a folder after `--files` to start there. The native window provides a virtualised list, shortcuts to standard folders and a location field. Use Ctrl+L for the location field, Alt+Left and Alt+Right for history, Alt+Up for the parent folder, Ctrl+H for hidden files and F5 to refresh. Open a selected folder or file with Enter or a double-click. File activation uses the Windows default application.
+
 Monolith tries Win+Space first. If Windows reports that chord is already registered, Monolith registers Ctrl+Alt+Space as its fallback and displays it in the search placeholder. With `--resident`, the registered shortcut opens Spotlight and a second press dismisses it. Escape returns focus to the previous window when Windows permits it. To change the binding, create `%LOCALAPPDATA%\Monolith\config.toml` and restart Monolith.
 
 ```toml
@@ -49,7 +51,7 @@ Invalid settings are preserved on disk and defaults are loaded. Rename the file 
 ## Project status
 
 - Implemented in the experimental build. Native Win32 launcher, local ranking of desktop shortcuts and open windows, calculator, opt-in running-window Dock, configurable shortcut, light and dark themes, and safe start.
-- Planned. Simultaneous per-display Docks, additional Top Bar modules, media and Android integrations for Control Center, workspaces, Files, indexing, optimisation, installer and release validation.
+- Planned. Simultaneous per-display Docks, additional Top Bar modules, media and Android integrations for Control Center, workspaces, Files previews and operations, indexing, optimisation, installer and release validation.
 - Unsupported by the current launcher. UWP app discovery, file search, web search and arbitrary command execution.
 
 The UI runs on the Win32 message queue and renders on demand. Spotlight builds its catalog on first use. Search and configuration are independent of Win32, with unit tests for ranking, discovery and recovery.
@@ -69,3 +71,5 @@ See [project status](MONOLITH_STATUS.md) and [benchmark procedure](benchmarks/RE
 ![Control Center with native volume and links to Windows settings](docs/control-center.png)
 
 ![Two live window thumbnails in the Mission Control grid](docs/mission.png)
+
+![Monolith Files showing a verification folder and the standard folder shortcuts](docs/files.png)

@@ -4,6 +4,7 @@ use crate::{
     control_center::{self, ControlCenter},
     desktop::{self, ActivationError},
     dock::{self, Dock},
+    files,
     hotkey::{self, Hotkey, Notice},
     island::Island,
     mission::{self, Mission},
@@ -101,6 +102,7 @@ pub(crate) unsafe fn shell_menu(hwnd: HWND, launcher: HWND, portuguese: bool) {
         }
         let actions = [
             ("Search", "Buscar", dock::SHOW_SPOTLIGHT),
+            ("Files", "Arquivos", files::OPEN),
             ("Mission Control", "Controle de Janelas", mission::OPEN),
             (
                 "Control Center",
@@ -115,10 +117,30 @@ pub(crate) unsafe fn shell_menu(hwnd: HWND, launcher: HWND, portuguese: bool) {
         }
         let mut point = POINT::default();
         if GetCursorPos(&mut point) != 0 {
+            let mut bounds = RECT::default();
+            let mut display = MONITORINFO {
+                cbSize: size_of::<MONITORINFO>() as u32,
+                ..Default::default()
+            };
+            let mut align = TPM_TOPALIGN;
+            if GetWindowRect(hwnd, &mut bounds) != 0
+                && GetMonitorInfoW(
+                    MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST),
+                    &mut display,
+                ) != 0
+            {
+                // Keep the popup clear of its topmost anchor, including the first menu row.
+                if display.rcWork.bottom - bounds.bottom >= bounds.top - display.rcWork.top {
+                    point.y = bounds.bottom;
+                } else {
+                    point.y = bounds.top;
+                    align = TPM_BOTTOMALIGN;
+                }
+            }
             SetForegroundWindow(hwnd);
             let selected = TrackPopupMenuEx(
                 menu,
-                TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON,
+                TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON | align,
                 point.x,
                 point.y,
                 hwnd,
@@ -165,6 +187,15 @@ pub fn run() -> io::Result<()> {
 
     unsafe {
         SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+        let palette = Palette::new(settings.theme);
+        let portuguese = matches!(settings.language, Language::Portuguese);
+        if !safe && let Some(index) = args.iter().position(|arg| arg == "--files") {
+            let folder = args
+                .get(index + 1)
+                .filter(|value| !value.as_encoded_bytes().starts_with(b"--"))
+                .map(PathBuf::from);
+            return files::run(folder, palette, portuguese);
+        }
         let instance = GetModuleHandleW(std::ptr::null());
         let class_name = wide("MonolithSpotlight");
         let class = WNDCLASSW {
@@ -178,7 +209,6 @@ pub fn run() -> io::Result<()> {
             return Err(io::Error::last_os_error());
         }
 
-        let palette = Palette::new(settings.theme);
         let mut state = Box::new(State {
             apps: None,
             desktop: None,
@@ -190,7 +220,7 @@ pub fn run() -> io::Result<()> {
             background: CreateSolidBrush(palette.background),
             surface: CreateSolidBrush(palette.surface),
             palette,
-            portuguese: matches!(settings.language, Language::Portuguese),
+            portuguese,
             can_hide: false,
             previous_foreground: null_mut(),
         });
@@ -414,6 +444,14 @@ unsafe fn run_window(
             }
             if msg.hwnd == hwnd && msg.message == dock::SHOW_SPOTLIGHT {
                 show(hwnd, state, dock.as_ref());
+                continue;
+            }
+            if msg.hwnd == hwnd && msg.message == files::OPEN {
+                if let Err(error) = env::current_exe()
+                    .and_then(|exe| std::process::Command::new(exe).arg("--files").spawn())
+                {
+                    report(&format!("Could not open Files ({error})"));
+                }
                 continue;
             }
             if msg.hwnd == hwnd && msg.message == control_center::OPEN {

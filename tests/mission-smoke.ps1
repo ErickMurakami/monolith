@@ -134,7 +134,7 @@ try {
         if (![DesktopSmoke]::RightClickLeftEdge($bar)) { throw 'Could not open the shell menu.' }
         Wait-Until { [DesktopSmoke]::FindVisibleForProcess('#32768', [uint32]$launcher.Id) -ne [IntPtr]::Zero } 'The shell menu did not appear.'
         $menu = [DesktopSmoke]::FindVisibleForProcess('#32768', [uint32]$launcher.Id)
-        if (![DesktopSmoke]::ClickAt($menu, 0.375)) { throw 'Could not select Mission Control.' }
+        Wait-Until { [DesktopSmoke]::ClickAt($menu, 0.5) } 'Could not select Mission Control.'
         Wait-Until { (Find-Mission $launcher) -ne [IntPtr]::Zero } 'The shell menu did not open Mission Control.'
         if (![DesktopSmoke]::PressChord([uint16[]]@(), 0x1B, $false)) { throw 'Could not dismiss Mission Control.' }
         Wait-Until { (Find-Mission $launcher) -eq [IntPtr]::Zero } 'Escape did not dismiss Mission Control.'

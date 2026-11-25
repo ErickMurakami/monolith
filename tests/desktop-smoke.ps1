@@ -500,8 +500,8 @@ function Invoke-TopBarSmoke($Application) {
                 [DesktopSmoke]::FindVisibleForProcess('#32768', [uint32]$launcher.Id) -ne [IntPtr]::Zero
             } 'The Top Bar menu did not appear.'
             $menu = [DesktopSmoke]::FindVisibleForProcess('#32768', [uint32]$launcher.Id)
-            $position = if ($action -eq 'search') { 0.125 } else { 0.875 }
-            if (![DesktopSmoke]::ClickAt($menu, $position)) { throw "Could not select $action in the Top Bar menu." }
+            $position = if ($action -eq 'search') { 0.1 } else { 0.9 }
+            Wait-Until { [DesktopSmoke]::ClickAt($menu, $position) } "Could not select $action in the Top Bar menu."
             if ($action -eq 'search') {
                 Wait-Until {
                     [DesktopSmoke]::FindVisibleForProcess('MonolithSpotlight', [uint32]$launcher.Id) -ne [IntPtr]::Zero

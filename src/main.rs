@@ -15,6 +15,10 @@ mod desktop;
 #[cfg(windows)]
 mod dock;
 #[cfg(windows)]
+mod files;
+#[cfg(windows)]
+mod files_directory;
+#[cfg(windows)]
 mod hotkey;
 #[cfg(windows)]
 mod icons;

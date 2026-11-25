@@ -20,6 +20,7 @@ Foundation and the first native application are implemented. Desktop Experience 
 - `src/island.rs` presents real media metadata, controls and timeline progress in a borderless optional overlay.
 - `src/control_center.rs` adjusts the default audio output, displays available battery data and opens documented Windows Settings pages. `src/audio.rs` bounds updates and releases Core Audio subscriptions when the panel closes.
 - `src/mission.rs` displays a native borderless window overview with live DWM thumbnails, the shared Dock inventory, paging, keyboard and mouse selection and a Windows Task View action.
+- `src/files.rs` owns a native, on-demand Files window with a custom title surface, virtualised navigation, standard Windows folders and default app activation. `src/files_directory.rs` loads directories off the GUI thread and preserves history on failures.
 - `benchmarks/measure.ps1` samples Windows and Monolith memory, CPU and I/O.
 - The benchmark also records the busiest GPU engine from WDDM counters when available.
 - `docs/spotlight.png` shows a calculation in the running borderless Spotlight release build.
@@ -28,8 +29,9 @@ Foundation and the first native application are implemented. Desktop Experience 
 - `docs/island.png` shows the Island controlling a real Helium media session carrying local test audio.
 - `docs/control-center.png` shows the live borderless panel and the Windows settings actions.
 - `docs/mission.png` shows a cropped capture of two real DWM thumbnails for verification windows.
+- `docs/files.png` shows the real directory list and standard-folder actions with verification files.
 
-The Dock groups running windows by packaged application ID or verified process image, opens a native window chooser and previews the active or first visible window in a group. It can follow the active display, retract to a pointer reveal strip and show native Shell icons for pins and running groups. The Island shows title, artist, artwork, available transport controls and progress from the Windows timeline. Simultaneous per-display Docks, additional Top Bar modules, media and Android integrations for Control Center, workspaces, Files, indexing, tuning, settings UI, Android integration and installers are pending.
+The Dock groups running windows by packaged application ID or verified process image, opens a native window chooser and previews the active or first visible window in a group. It can follow the active display, retract to a pointer reveal strip and show native Shell icons for pins and running groups. The Island shows title, artist, artwork, available transport controls and progress from the Windows timeline. Simultaneous per-display Docks, additional Top Bar modules, media and Android integrations for Control Center, workspaces, Files previews and operations, indexing, tuning, settings UI, Android integration and installers are pending.
 
 ## Validation
 
@@ -40,6 +42,8 @@ The media smoke test used an isolated local Helium profile and real Windows medi
 `tests/control-center-smoke.ps1` verified borderless styles, keyboard navigation, actual Core Audio level and mute changes, external notifications, foreground restoration, focus-loss dismissal, reopening from the Top Bar and opening Windows Settings. It restored the initial audio level and mute state. The live panel capture was visually reviewed. Mixed-DPI displays and physical output switching remain to be tested.
 
 `tests/mission-smoke.ps1` verified borderless styles, live thumbnail pixels and updates, mouse switching, keyboard restoration of a minimised window, F5 after a source closes, the Dock and Top Bar menu entries and native Task View. Nineteen unit tests passed. Windows Task View remains the path for virtual desktop thumbnails, creation, naming, reordering and moves. Mixed-DPI and multiple physical display validation remain pending.
+
+`tests/files-smoke.ps1` verified the virtualised list, custom minimise, maximise, restore and close, folder history, parent navigation, Unicode paths, hidden files, error recovery, refresh and launch from the shell. Twenty-one unit tests passed. The Files capture was visually reviewed. Live removable, UNC and WSL volume tests remain pending.
 
 Checked the declared licences of all locked dependencies, including the added Windows Runtime bindings. Cargo Audit passed with warnings denied across 31 lockfile entries.
 
@@ -69,4 +73,4 @@ The current Windows build returned Win32 error 1409 on a direct Win+Space regist
 
 ## Next task
 
-Build the first Monolith Files browsing slice with an on-demand native window and a virtualised list. Keep Windows Task View for desktop management operations beyond the public virtual desktop API. Win+Space remains the target Spotlight shortcut. Keep the experimental capture out of the public runtime until foreground activation and immediate typing are stable.
+Add on-demand Quick Look to Files. Keep Windows Task View for desktop management operations beyond the public virtual desktop API. Win+Space remains the target Spotlight shortcut. Keep the experimental capture out of the public runtime until foreground activation and immediate typing are stable.
