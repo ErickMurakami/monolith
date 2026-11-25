@@ -32,3 +32,7 @@ Invalid settings are preserved on disk and defaults are loaded. Rename the file 
 The UI runs on the Win32 message queue and renders on demand. Spotlight builds its catalog on first use. Search and configuration are independent of Win32, with unit tests for ranking, discovery and recovery.
 
 See [architecture](docs/architecture.md) for the implementation boundaries and roadmap.
+
+See [project status](MONOLITH_STATUS.md) and [benchmark procedure](benchmarks/README.md).
+
+![Spotlight running on Windows with a verification shortcut](docs/spotlight.png)
