@@ -13,3 +13,4 @@
 - Refined Spotlight into a borderless, DPI-aware overlay that dismisses on Escape or loss of focus.
 - Added drag reordering of Dock pins and local order persistence.
 - Grouped Dock windows by application identity and added a native window chooser.
+- Added an opt-in borderless Top Bar with the native clock and battery status.

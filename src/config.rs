@@ -14,6 +14,7 @@ pub struct Config {
     pub shortcut: Shortcut,
     pub dock: bool,
     pub dock_pins: Vec<String>,
+    pub top_bar: bool,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -129,6 +130,7 @@ mod tests {
         let (config, issue) = load(Path::new(""), true);
         assert!(matches!(config.shortcut, Shortcut::Disabled));
         assert!(!config.dock);
+        assert!(!config.top_bar);
         assert!(issue.is_none());
     }
 

@@ -19,6 +19,8 @@ Start a query with `@` to find an open window by its title. Press Enter or doubl
 
 Launch with `--dock` to show the experimental Dock. It floats above the primary display's work area and hides when a foreground window enters fullscreen on that display. Click a window to switch to it, or click its button again while it is active to minimise it. A group opens a native menu for choosing one of its windows. **Search** opens Spotlight. **Exit** stops Monolith. The Dock shows up to eight pins and window groups depending on available space. Spotlight provides title search for the wider list.
 
+Launch with `--top-bar` to show a borderless status bar on the primary display. It displays the local clock and battery status when Windows reports a battery. Right-click the bar to open Spotlight or exit Monolith. It hides during fullscreen use.
+
 Monolith attempts to register Win+Space. If Windows reserves that combination, the search field identifies the conflict in its placeholder and the launcher remains accessible. To change the binding, create `%LOCALAPPDATA%\Monolith\config.toml` and restart Monolith.
 
 ```toml
@@ -27,6 +29,7 @@ language = "english"        # english, portuguese
 shortcut = "ctrl-alt-space" # win-space, ctrl-alt-space, disabled
 dock = false               # set true to opt in
 dock_pins = ["Visual Studio Code"] # exact Start menu shortcut names, in display order
+top_bar = false            # set true to opt in
 ```
 
 Pins are resolved from local Start menu shortcuts. Missing and repeated names are skipped. Pins take the first available slots in the Dock. Drag a pin onto another pin to reorder it. The order is saved in `dock-order.toml` next to the configuration and takes precedence over the list. Remove the order file to restore configuration order.
@@ -36,7 +39,7 @@ Invalid settings are preserved on disk and defaults are loaded. Rename the file 
 ## Project status
 
 - Implemented in the experimental build. Native Win32 launcher, local ranking of desktop shortcuts and open windows, calculator, opt-in running-window Dock, configurable shortcut, light and dark themes, and safe start.
-- Planned. Dock icons, previews, pointer auto-hide and per-display placement, Top Bar, media Island, workspaces, Files, indexing, optimisation, Android continuity, installer and release validation.
+- Planned. Dock icons, previews, pointer auto-hide and per-display placement, additional Top Bar modules, media Island, workspaces, Files, indexing, optimisation, Android continuity, installer and release validation.
 - Unsupported by the current launcher. UWP app discovery, file search, web search and arbitrary command execution.
 
 The UI runs on the Win32 message queue and renders on demand. Spotlight builds its catalog on first use. Search and configuration are independent of Win32, with unit tests for ranking, discovery and recovery.
@@ -48,3 +51,5 @@ See [project status](MONOLITH_STATUS.md) and [benchmark procedure](benchmarks/RE
 ![Borderless Spotlight showing a calculation on Windows](docs/spotlight.png)
 
 ![Cropped Dock capture showing Search and an active verification window](docs/dock.png)
+
+![Cropped Top Bar capture showing system power and clock](docs/top-bar.png)

@@ -13,6 +13,8 @@ mod overlay;
 #[cfg(any(windows, test))]
 mod search;
 #[cfg(windows)]
+mod top_bar;
+#[cfg(windows)]
 mod windows;
 
 #[cfg(windows)]

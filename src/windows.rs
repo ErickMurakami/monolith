@@ -5,6 +5,7 @@ use crate::{
     dock::{self, Dock},
     overlay::{self, Palette},
     search::{self, App},
+    top_bar::TopBar,
 };
 use std::{
     env, ffi::c_void, io, mem::size_of, os::windows::ffi::OsStrExt, path::PathBuf, ptr::null_mut,
@@ -158,6 +159,7 @@ pub fn run() -> io::Result<()> {
         let state_ptr = Box::into_raw(state);
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, state_ptr as isize);
         let show_dock = !safe && (settings.dock || args.iter().any(|arg| arg == "--dock"));
+        let show_top_bar = !safe && (settings.top_bar || args.iter().any(|arg| arg == "--top-bar"));
         let order_path = config_path.with_file_name("dock-order.toml");
         let pins = if show_dock && !settings.dock_pins.is_empty() {
             let apps = (*state_ptr)
@@ -176,6 +178,7 @@ pub fn run() -> io::Result<()> {
             settings.shortcut,
             resident,
             show_dock.then_some(dock::Settings { pins, order_path }),
+            show_top_bar,
         );
         if IsWindow(hwnd) != 0 {
             DestroyWindow(hwnd);
@@ -193,6 +196,7 @@ unsafe fn run_window(
     shortcut: Shortcut,
     resident: bool,
     dock_settings: Option<dock::Settings>,
+    show_top_bar: bool,
 ) -> io::Result<()> {
     unsafe {
         let edit = CreateWindowExW(
@@ -280,7 +284,18 @@ unsafe fn run_window(
         } else {
             None
         };
-        (*state).can_hide = dock.is_some() || (resident && registered);
+        let top_bar = if show_top_bar {
+            match TopBar::new(instance, hwnd, (*state).palette, (*state).portuguese) {
+                Ok(bar) => Some(bar),
+                Err(error) => {
+                    report(&format!("Could not open the Top Bar ({error})"));
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        (*state).can_hide = dock.is_some() || top_bar.is_some() || (resident && registered);
         if !(*state).can_hide {
             show(hwnd, state);
         }

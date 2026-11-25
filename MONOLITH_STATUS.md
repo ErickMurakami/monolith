@@ -11,16 +11,18 @@ Foundation and the first native application are implemented. Desktop Experience 
 - `src/desktop.rs` discovers eligible windows and their display, detects fullscreen geometry and switches on explicit selection.
 - `src/dock.rs` presents ordered, configurable Start menu pins and open windows on the primary display. The Dock handles live updates, minimisation, restoration and fullscreen suppression.
 - `src/config.rs` validates TOML, preserves invalid files and supports a safe start.
+- `src/top_bar.rs` displays native clock and battery data in an opt-in borderless overlay.
 - `benchmarks/measure.ps1` samples Windows and Monolith memory, CPU and I/O.
 - The benchmark also records the busiest GPU engine from WDDM counters when available.
 - `docs/spotlight.png` shows a calculation in the running borderless Spotlight release build.
 - `docs/dock.png` is a cropped capture of the running Dock with a verification window selected.
+- `docs/top-bar.png` is a cropped live capture of the Top Bar status area.
 
-The Dock groups running windows by packaged application ID or verified process image and opens a native window chooser. Dock icons, previews, pointer auto-hide and per-display placement are pending. Top Bar, Island, workspace management, Files, indexing, tuning, settings UI, Android integration and installers are pending.
+The Dock groups running windows by packaged application ID or verified process image and opens a native window chooser. Dock icons, previews, pointer auto-hide and per-display placement are pending. Workspaces and connectivity modules for the Top Bar, the media Island, Files, indexing, tuning, settings UI, Android integration and installers are pending.
 
 ## Validation
 
-Validated on native Windows 11 26H2. Cargo formatting, Clippy with warnings denied, twelve unit tests and the locked release build passed. A live desktop run verified shortcut launch, safe-mode exit and calculator output. `tests/desktop-smoke.ps1` verified filtering out hidden and owned windows, identifying fullscreen and minimised windows, refreshing after a window closes and switching to a minimised window. The same script with `-Dock` verified mouse clicks, minimisation, restoration, title changes, grouped menu selection, fullscreen suppression and recovery, Spotlight opening, clean exit and safe-mode suppression. The script with `-Pins` verified configured ordering, drag persistence after restart, deduplication and launching a real shortcut. An additional live check found packaged Notepad by the title of a temporary test document. The `-Spotlight` test verified the borderless styles, placement, calculation, Escape and focus-loss dismissal. The launcher capture was visually reviewed. Cross-build, high contrast and mixed-DPI testing remain pending.
+Validated on native Windows 11 26H2. Cargo formatting, Clippy with warnings denied, fourteen unit tests and the locked release build passed. A live desktop run verified shortcut launch, safe-mode exit and calculator output. `tests/desktop-smoke.ps1` verified filtering out hidden and owned windows, identifying fullscreen and minimised windows, refreshing after a window closes and switching to a minimised window. The same script with `-Dock` verified mouse clicks, minimisation, restoration, title changes, grouped menu selection, fullscreen suppression and recovery, Spotlight opening, clean exit and safe-mode suppression. The script with `-Pins` verified configured ordering, drag persistence after restart, deduplication and launching a real shortcut. An additional live check found packaged Notepad by the title of a temporary test document. The `-Spotlight` test verified the borderless styles, placement, calculation, Escape and focus-loss dismissal. The `-TopBar` test verified the clock, non-activating styles, fullscreen hiding, Spotlight and Exit. Live Spotlight and Top Bar captures were visually reviewed. Cross-build, high contrast and mixed-DPI testing remain pending.
 
 Checked the declared licences of all locked dependencies. OSV returned zero advisory matches for 19 registry package versions. Cargo Audit also passed against the RustSec database with warnings denied.
 
@@ -40,4 +42,4 @@ The binary needs no elevation and makes no persistent changes to Windows. Dismis
 
 ## Next task
 
-Use the shared borderless overlay design for the Top Bar. Extend the Dock with native monochrome icons and per-display placement.
+Extend the Dock with active-display placement and pointer auto-hide. Extract and cache native monochrome icons, then add previews and the media Island.

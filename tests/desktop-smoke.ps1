@@ -3,6 +3,7 @@ param(
     [switch]$Dock,
     [switch]$Pins,
     [switch]$Spotlight,
+    [switch]$TopBar,
     [string]$Capture
 )
 
@@ -24,6 +25,7 @@ public static class DesktopSmoke {
     [DllImport("user32.dll", CharSet=CharSet.Unicode)]
     public static extern IntPtr FindWindowEx(IntPtr parent, IntPtr after, string cls, string title);
     public static IntPtr FindClass(string cls) { return FindWindowEx(IntPtr.Zero, IntPtr.Zero, cls, null); }
+    public static IntPtr FindChild(IntPtr parent, string cls) { return FindWindowEx(parent, IntPtr.Zero, cls, null); }
     public static IntPtr FindVisibleForProcess(string cls, uint process) {
         IntPtr handle = IntPtr.Zero;
         while ((handle = FindWindowEx(IntPtr.Zero, handle, cls, null)) != IntPtr.Zero) {
@@ -69,12 +71,18 @@ public static class DesktopSmoke {
         return ClickAt(target, 0.5);
     }
     public static bool ClickAt(IntPtr target, double verticalPosition) {
+        return PointerClick(target, 0.5, verticalPosition, 0x0002, 0x0004);
+    }
+    public static bool RightClickLeftEdge(IntPtr target) {
+        return PointerClick(target, 0.002, 0.5, 0x0008, 0x0010);
+    }
+    static bool PointerClick(IntPtr target, double horizontal, double verticalPosition, uint down, uint up) {
         Rect bounds;
         Point original;
         if (target == IntPtr.Zero || !GetWindowRect(target, out bounds) || !GetCursorPos(out original))
             return false;
         var point = new Point {
-            X = (bounds.Left + bounds.Right) / 2,
+            X = bounds.Left + (int)((bounds.Right - bounds.Left) * horizontal),
             Y = bounds.Top + (int)((bounds.Bottom - bounds.Top) * verticalPosition),
         };
         if (WindowFromPoint(point) != target || !SetCursorPos(point.X, point.Y))
@@ -83,8 +91,8 @@ public static class DesktopSmoke {
             if (WindowFromPoint(point) != target)
                 return false;
             var events = new[] {
-                new Input { Mouse = new MouseInput { Flags = 0x0002 } },
-                new Input { Mouse = new MouseInput { Flags = 0x0004 } },
+                new Input { Mouse = new MouseInput { Flags = down } },
+                new Input { Mouse = new MouseInput { Flags = up } },
             };
             bool sent = SendInput(2, events, Marshal.SizeOf(typeof(Input))) == 2;
             if (sent) System.Threading.Thread.Sleep(100);
@@ -147,10 +155,11 @@ function Get-Rows($List) {
     }
 }
 
-function Save-SurfaceCapture($Window, [string]$Path, [int]$Inset = 2) {
+function Save-SurfaceCapture($Window, [string]$Path, [int]$Inset = 2, [int]$RightWidth = 0) {
     Add-Type -AssemblyName System.Drawing
     Start-Sleep -Milliseconds 100
     $bounds = [DesktopSmoke]::Bounds($Window)
+    if ($RightWidth -gt 0) { $bounds[0] = [Math]::Max($bounds[0], $bounds[2]-$RightWidth) }
     $image = [Drawing.Bitmap]::new(($bounds[2]-$bounds[0]-2*$Inset), ($bounds[3]-$bounds[1]-2*$Inset))
     $graphics = [Drawing.Graphics]::FromImage($image)
     try {
@@ -173,6 +182,72 @@ function Focus-Fixture($Form) {
         [DesktopSmoke]::GetForegroundWindow() -eq $Form.Handle
     } 'Fixture could not receive foreground focus.'
     $Form.TopMost = $false
+}
+
+function Invoke-TopBarSmoke($Application) {
+    $normal = New-Object Windows.Forms.Form
+    $fullscreen = New-Object Windows.Forms.Form
+    $launcher = $null
+    $bar = [IntPtr]::Zero
+    try {
+        $normal.Text = 'Top Bar verification'
+        $normal.Show()
+        Focus-Fixture $normal
+        $launcher = Start-Process -FilePath $Application -ArgumentList '--top-bar' -PassThru
+        Wait-Until {
+            [DesktopSmoke]::FindVisibleForProcess('MonolithTopBar', [uint32]$launcher.Id) -ne [IntPtr]::Zero
+        } 'The Top Bar did not appear.'
+        $bar = [DesktopSmoke]::FindVisibleForProcess('MonolithTopBar', [uint32]$launcher.Id)
+        $style = [DesktopSmoke]::Style($bar, -16)
+        $extended = [DesktopSmoke]::Style($bar, -20)
+        if (($style -band 0x00CF0000) -or !($extended -band 0x80)) { throw 'The Top Bar is not borderless.' }
+        if ([DesktopSmoke]::GetForegroundWindow() -ne $normal.Handle) { throw 'The Top Bar took focus.' }
+        $status = [DesktopSmoke]::FindChild($bar, 'Static')
+        $text = New-Object Text.StringBuilder 100
+        [void][DesktopSmoke]::Read($status, 0xD, [UIntPtr]::new([uint32]100), $text)
+        $now = Get-Date
+        $expectedTimes = @($now.ToString('HH:mm'),$now.AddMinutes(-1).ToString('HH:mm'))
+        if (!($expectedTimes | Where-Object { $text.ToString().EndsWith($_) })) { throw 'The Top Bar clock does not show local time.' }
+        if ($Capture) { Save-SurfaceCapture $bar $Capture 2 250 }
+
+        $fullscreen.Text = 'Top Bar fullscreen verification'
+        $fullscreen.FormBorderStyle = 'None'
+        $fullscreen.StartPosition = 'Manual'
+        $fullscreen.Bounds = [Windows.Forms.Screen]::PrimaryScreen.Bounds
+        $fullscreen.Show()
+        Focus-Fixture $fullscreen
+        Wait-Until { ![DesktopSmoke]::IsWindowVisible($bar) } 'The Top Bar did not hide for fullscreen.'
+        $fullscreen.SetBounds(40, 40, 640, 420)
+        Wait-Until { [DesktopSmoke]::IsWindowVisible($bar) } 'The Top Bar did not return after fullscreen.'
+
+        foreach ($action in 'search','exit') {
+            if (![DesktopSmoke]::RightClickLeftEdge($bar)) { throw 'Could not open the Top Bar menu.' }
+            Wait-Until {
+                [DesktopSmoke]::FindVisibleForProcess('#32768', [uint32]$launcher.Id) -ne [IntPtr]::Zero
+            } 'The Top Bar menu did not appear.'
+            $menu = [DesktopSmoke]::FindVisibleForProcess('#32768', [uint32]$launcher.Id)
+            $position = if ($action -eq 'search') { 0.25 } else { 0.75 }
+            if (![DesktopSmoke]::ClickAt($menu, $position)) { throw "Could not select $action in the Top Bar menu." }
+            if ($action -eq 'search') {
+                Wait-Until {
+                    [DesktopSmoke]::FindVisibleForProcess('MonolithSpotlight', [uint32]$launcher.Id) -ne [IntPtr]::Zero
+                } 'The Top Bar menu did not open Spotlight.'
+                Start-Sleep -Milliseconds ([DesktopSmoke]::GetDoubleClickTime() + 50)
+            } else {
+                Wait-Until { $launcher.HasExited } 'The Top Bar Exit action did not stop the process.'
+            }
+        }
+        'Top Bar native styles, clock, focus, fullscreen, Spotlight and Exit passed.'
+    } finally {
+        if ($launcher -and !$launcher.HasExited) {
+            if ($bar -ne [IntPtr]::Zero) {
+                [void][DesktopSmoke]::Post($bar, 0x10, [UIntPtr]::Zero, [IntPtr]::Zero)
+            }
+            if (!$launcher.WaitForExit(2000)) { Stop-Process -InputObject $launcher }
+        }
+        $fullscreen.Dispose()
+        $normal.Dispose()
+    }
 }
 
 function Invoke-SpotlightSmoke($Application) {
@@ -409,10 +484,11 @@ function Invoke-DockSmoke($Application) {
 }
 
 $originalDpi = [DesktopSmoke]::SetThreadDpiAwarenessContext([IntPtr]::new(-4))
-if ($Dock -or $Pins -or $Spotlight) {
+if ($Dock -or $Pins -or $Spotlight -or $TopBar) {
     try {
         if ($Pins) { Invoke-PinSmoke (Resolve-Path $Binary) }
         elseif ($Spotlight) { Invoke-SpotlightSmoke (Resolve-Path $Binary) }
+        elseif ($TopBar) { Invoke-TopBarSmoke (Resolve-Path $Binary) }
         else { Invoke-DockSmoke (Resolve-Path $Binary) }
     } finally {
         if ($originalDpi -ne [IntPtr]::Zero) {
