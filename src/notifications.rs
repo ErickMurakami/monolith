@@ -15,11 +15,12 @@ use crate::{
 };
 use std::{
     cell::RefCell,
-    collections::HashSet,
+    collections::{HashSet, VecDeque},
     ffi::c_void,
     io,
     mem::size_of,
     ptr::null_mut,
+    rc::Rc,
     sync::mpsc::{self, Receiver, SyncSender},
     thread::{self, JoinHandle},
     time::Duration,
@@ -46,6 +47,8 @@ use windows_sys::Win32::{
 };
 
 const READY: u32 = WM_APP + 30;
+/// Posted to the launcher to open the Notification Centre.
+pub const OPEN: u32 = WM_APP + 31;
 const HIDE: usize = 1;
 const VISIBLE_MS: u32 = 6000;
 const QUEUE: usize = 4;
@@ -73,14 +76,19 @@ pub struct Notifications {
 
 struct State {
     incoming: Receiver<Incoming>,
-    current: Option<Incoming>,
+    current: Option<Rc<Incoming>>,
+    /// Session-only history, newest first. Never written to disk.
+    history: VecDeque<Entry>,
+    centre: HWND,
+    scroll: i32,
     palette: Palette,
     fonts: [HFONT; 3],
     dpi: u32,
+    portuguese: bool,
 }
 
 impl Notifications {
-    pub fn new(instance: *mut c_void, palette: Palette) -> io::Result<Self> {
+    pub fn new(instance: *mut c_void, palette: Palette, portuguese: bool) -> io::Result<Self> {
         unsafe {
             let class_name = wide("MonolithNotification");
             let class = WNDCLASSW {
@@ -129,9 +137,13 @@ impl Notifications {
                 state: Box::new(State {
                     incoming,
                     current: None,
+                    history: VecDeque::new(),
+                    centre: null_mut(),
+                    scroll: 0,
                     palette,
                     fonts: [null_mut(); 3],
                     dpi: 0,
+                    portuguese,
                 }),
                 worker: Some(worker),
             };
@@ -165,6 +177,10 @@ impl Drop for Notifications {
             SetWindowLongPtrW(self.hwnd, GWLP_USERDATA, 0);
             KillTimer(self.hwnd, HIDE);
             DestroyWindow(self.hwnd);
+            if !self.state.centre.is_null() {
+                SetWindowLongPtrW(self.state.centre, GWLP_USERDATA, 0);
+                DestroyWindow(self.state.centre);
+            }
             for font in self.state.fonts {
                 if !font.is_null() {
                     DeleteObject(font);
@@ -363,6 +379,8 @@ unsafe fn present(hwnd: HWND, state: *mut State) {
     unsafe {
         let mut latest = None;
         while let Ok(incoming) = (*state).incoming.try_recv() {
+            let incoming = Rc::new(incoming);
+            record(state, Rc::clone(&incoming));
             latest = Some(incoming);
         }
         let Some(incoming) = latest else { return };
@@ -567,6 +585,353 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
     }
 }
 
+const HISTORY_LIMIT: usize = 50;
+const CENTRE_CLASS: &str = "MonolithNotificationCentre";
+const HEADER: i32 = 44;
+const ROW: i32 = 68;
+
+struct Entry {
+    incoming: Rc<Incoming>,
+    /// Local hour and minute of arrival.
+    time: (u16, u16),
+    unread: bool,
+}
+
+unsafe fn record(state: *mut State, incoming: Rc<Incoming>) {
+    unsafe {
+        let mut now = windows_sys::Win32::Foundation::SYSTEMTIME::default();
+        windows_sys::Win32::System::SystemInformation::GetLocalTime(&mut now);
+        let history = &mut (*state).history;
+        history.push_front(Entry {
+            incoming,
+            time: (now.wHour, now.wMinute),
+            unread: true,
+        });
+        history.truncate(HISTORY_LIMIT);
+        if !(*state).centre.is_null() && IsWindowVisible((*state).centre) != 0 {
+            InvalidateRect((*state).centre, std::ptr::null(), 1);
+        }
+    }
+}
+
+impl Notifications {
+    /// Open the right-side Notification Centre at the primary display's upper right.
+    pub fn open_centre(&self) {
+        unsafe {
+            let state = (&raw const *self.state).cast_mut();
+            if (*state).centre.is_null() {
+                let instance = GetWindowLongPtrW(self.hwnd, GWLP_HINSTANCE) as *mut c_void;
+                let class_name = wide(CENTRE_CLASS);
+                let class = WNDCLASSW {
+                    hInstance: instance,
+                    lpfnWndProc: Some(centre_proc),
+                    hCursor: LoadCursorW(null_mut(), IDC_ARROW),
+                    lpszClassName: class_name.as_ptr(),
+                    ..Default::default()
+                };
+                RegisterClassW(&class);
+                let centre = CreateWindowExW(
+                    overlay::EX_STYLE | WS_EX_TOPMOST,
+                    class_name.as_ptr(),
+                    wide("Monolith Notification Centre").as_ptr(),
+                    overlay::STYLE,
+                    0,
+                    0,
+                    0,
+                    0,
+                    null_mut(),
+                    null_mut(),
+                    instance,
+                    null_mut(),
+                );
+                if centre.is_null() {
+                    return;
+                }
+                let corner = DWMWCP_ROUND;
+                DwmSetWindowAttribute(
+                    centre,
+                    DWMWA_WINDOW_CORNER_PREFERENCE as u32,
+                    (&raw const corner).cast(),
+                    size_of::<i32>() as u32,
+                );
+                SetWindowLongPtrW(centre, GWLP_USERDATA, state as isize);
+                (*state).centre = centre;
+            }
+            let centre = (*state).centre;
+            let monitor = MonitorFromWindow(
+                FindWindowW(wide("MonolithTopBar").as_ptr(), null_mut()),
+                MONITOR_DEFAULTTOPRIMARY,
+            );
+            let mut info = MONITORINFO {
+                cbSize: size_of::<MONITORINFO>() as u32,
+                ..Default::default()
+            };
+            if GetMonitorInfoW(monitor, &mut info) == 0 {
+                return;
+            }
+            // Move first so the DPI reflects the target display.
+            SetWindowPos(
+                centre,
+                null_mut(),
+                info.rcWork.left,
+                info.rcWork.top,
+                1,
+                1,
+                SWP_NOZORDER | SWP_NOACTIVATE,
+            );
+            let dpi = GetDpiForWindow(centre).max(96);
+            ensure_fonts(state, dpi);
+            let scale = |value| overlay::scale(value, dpi);
+            let work = info.rcWork;
+            let width = scale(360).min((work.right - work.left - scale(16)).max(1));
+            let height = (work.bottom - work.top - scale(16)).max(1);
+            (*state).scroll = 0;
+            SetWindowPos(
+                centre,
+                HWND_TOPMOST,
+                work.right - width - scale(8),
+                work.top + scale(8),
+                width,
+                height,
+                SWP_SHOWWINDOW,
+            );
+            SetForegroundWindow(centre);
+            InvalidateRect(centre, std::ptr::null(), 1);
+        }
+    }
+}
+
+/// What a click selects in a list scrolled by `scroll` pixels.
+#[derive(Debug, PartialEq, Eq)]
+enum Target {
+    ClearAll,
+    Entry(usize),
+    Nothing,
+}
+
+fn target(x: i32, y: i32, width: i32, scroll: i32, entries: usize, dpi: u32) -> Target {
+    let scale = |value| overlay::scale(value, dpi);
+    if y < scale(HEADER) {
+        // "Clear all" occupies the right part of the header.
+        return if x > width - scale(110) && entries > 0 {
+            Target::ClearAll
+        } else {
+            Target::Nothing
+        };
+    }
+    let index = ((y - scale(HEADER) + scroll) / scale(ROW)) as usize;
+    if index < entries {
+        Target::Entry(index)
+    } else {
+        Target::Nothing
+    }
+}
+
+unsafe fn close_centre(hwnd: HWND, state: *mut State) {
+    unsafe {
+        ShowWindow(hwnd, SW_HIDE);
+        for entry in &mut (*state).history {
+            entry.unread = false;
+        }
+    }
+}
+
+unsafe fn text(hdc: HDC, font: HFONT, colour: u32, value: &str, mut bounds: RECT, flags: u32) {
+    unsafe {
+        if value.is_empty() {
+            return;
+        }
+        SelectObject(hdc, font);
+        SetTextColor(hdc, colour);
+        let mut wide: Vec<u16> = value.encode_utf16().collect();
+        DrawTextW(
+            hdc,
+            wide.as_mut_ptr(),
+            wide.len() as i32,
+            &mut bounds,
+            flags | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX | DT_VCENTER,
+        );
+    }
+}
+
+unsafe fn paint_centre(hwnd: HWND, state: *mut State) {
+    unsafe {
+        let mut paint = PAINTSTRUCT::default();
+        let hdc = BeginPaint(hwnd, &mut paint);
+        if hdc.is_null() {
+            return;
+        }
+        let palette = (*state).palette;
+        let secondary = dim(palette.text, palette.background);
+        let scale = |value| overlay::scale(value, (*state).dpi);
+        let fonts = (*state).fonts;
+        let portuguese = (*state).portuguese;
+        let mut area = RECT::default();
+        GetClientRect(hwnd, &mut area);
+        overlay::fill(hdc, &area, palette.background);
+        SetBkMode(hdc, TRANSPARENT as i32);
+        let pad = scale(14);
+        let header = RECT {
+            left: pad,
+            top: 0,
+            right: area.right - pad,
+            bottom: scale(HEADER),
+        };
+        let heading = if portuguese {
+            "Notificações"
+        } else {
+            "Notifications"
+        };
+        text(hdc, fonts[1], palette.text, heading, header, DT_LEFT);
+        let history = &(*state).history;
+        if history.is_empty() {
+            let empty = RECT {
+                top: scale(HEADER),
+                bottom: scale(HEADER + ROW),
+                ..header
+            };
+            let label = if portuguese {
+                "Nenhuma notificação"
+            } else {
+                "No notifications"
+            };
+            text(hdc, fonts[2], secondary, label, empty, DT_LEFT);
+        } else {
+            let label = if portuguese {
+                "Limpar tudo"
+            } else {
+                "Clear all"
+            };
+            text(hdc, fonts[2], palette.accent, label, header, DT_RIGHT);
+        }
+        // Rows scroll beneath the header; clip so they never draw over it.
+        IntersectClipRect(hdc, 0, scale(HEADER), area.right, area.bottom);
+        for (index, entry) in history.iter().enumerate() {
+            let top = scale(HEADER) + index as i32 * scale(ROW) - (*state).scroll;
+            if top > area.bottom {
+                break;
+            }
+            if top + scale(ROW) < scale(HEADER) {
+                continue;
+            }
+            let row = RECT {
+                left: scale(6),
+                top: top + scale(3),
+                right: area.right - scale(6),
+                bottom: top + scale(ROW) - scale(3),
+            };
+            overlay::fill(hdc, &row, palette.surface);
+            if entry.unread {
+                let marker = RECT {
+                    left: row.left,
+                    top: row.top + scale(10),
+                    right: row.left + scale(3),
+                    bottom: row.bottom - scale(10),
+                };
+                overlay::fill(hdc, &marker, palette.accent);
+            }
+            let mut left = row.left + pad;
+            if let Some(icon) = &entry.incoming.icon {
+                let size = scale(28);
+                let icon_top = row.top + (row.bottom - row.top - size) / 2;
+                let bounds = RECT {
+                    left: row.left + scale(12),
+                    top: icon_top,
+                    right: row.left + scale(12) + size,
+                    bottom: icon_top + size,
+                };
+                icon.draw(hdc, bounds, palette.surface);
+                left = bounds.right + scale(10);
+            }
+            let right = row.right - scale(10);
+            let line = |offset: i32, height: i32| RECT {
+                left,
+                top: row.top + scale(offset),
+                right,
+                bottom: row.top + scale(offset + height),
+            };
+            let (hour, minute) = entry.time;
+            let time = format!("{hour:02}:{minute:02}");
+            text(hdc, fonts[0], secondary, &time, line(5, 15), DT_RIGHT);
+            let mut app = line(5, 15);
+            app.right -= scale(44);
+            text(hdc, fonts[0], secondary, &entry.incoming.app, app, DT_LEFT);
+            let title = &entry.incoming.title;
+            text(hdc, fonts[1], palette.text, title, line(20, 19), DT_LEFT);
+            let body = &entry.incoming.body;
+            text(hdc, fonts[2], palette.text, body, line(39, 17), DT_LEFT);
+        }
+        EndPaint(hwnd, &paint);
+    }
+}
+
+unsafe fn clamp_scroll(hwnd: HWND, state: *mut State) {
+    unsafe {
+        let scale = |value| overlay::scale(value, (*state).dpi);
+        let mut area = RECT::default();
+        GetClientRect(hwnd, &mut area);
+        let content = (*state).history.len() as i32 * scale(ROW);
+        let visible = (area.bottom - scale(HEADER)).max(1);
+        (*state).scroll = (*state).scroll.clamp(0, (content - visible).max(0));
+    }
+}
+
+unsafe extern "system" fn centre_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    unsafe {
+        let state = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut State;
+        if state.is_null() {
+            return DefWindowProcW(hwnd, msg, wp, lp);
+        }
+        match msg {
+            WM_PAINT => {
+                paint_centre(hwnd, state);
+                0
+            }
+            WM_ERASEBKGND => 1,
+            WM_LBUTTONUP => {
+                let mut area = RECT::default();
+                GetClientRect(hwnd, &mut area);
+                let x = (lp & 0xffff) as i16 as i32;
+                let y = ((lp >> 16) & 0xffff) as i16 as i32;
+                let (scroll, dpi) = ((*state).scroll, (*state).dpi);
+                let history = &mut (*state).history;
+                match target(x, y, area.right, scroll, history.len(), dpi) {
+                    Target::ClearAll => history.clear(),
+                    // Dismissing removes the entry from Monolith; Windows keeps its copy.
+                    Target::Entry(index) => drop(history.remove(index)),
+                    Target::Nothing => return 0,
+                }
+                clamp_scroll(hwnd, state);
+                InvalidateRect(hwnd, std::ptr::null(), 1);
+                0
+            }
+            WM_MOUSEWHEEL => {
+                let delta = ((wp >> 16) & 0xffff) as i16 as i32;
+                (*state).scroll -= delta * overlay::scale(ROW, (*state).dpi) / 120;
+                clamp_scroll(hwnd, state);
+                InvalidateRect(hwnd, std::ptr::null(), 1);
+                0
+            }
+            WM_KEYDOWN
+                if wp as u16 == windows_sys::Win32::UI::Input::KeyboardAndMouse::VK_ESCAPE =>
+            {
+                close_centre(hwnd, state);
+                0
+            }
+            WM_CLOSE => {
+                // Hide rather than destroy: the window is reused and owned by `Notifications`.
+                close_centre(hwnd, state);
+                0
+            }
+            WM_ACTIVATE if wp as u16 == WA_INACTIVE as u16 => {
+                close_centre(hwnd, state);
+                0
+            }
+            _ => DefWindowProcW(hwnd, msg, wp, lp),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -601,5 +966,16 @@ mod tests {
         unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok().unwrap() };
         let id = r"{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\WindowsPowerShell\v1.0\powershell.exe";
         assert!(shell_icon(id).is_some());
+    }
+
+    #[test]
+    fn targets_clear_all_and_scrolled_rows() {
+        // 96 DPI: header 44 px, rows 68 px, panel 360 px wide.
+        assert_eq!(target(300, 20, 360, 0, 3, 96), Target::ClearAll);
+        assert_eq!(target(300, 20, 360, 0, 0, 96), Target::Nothing);
+        assert_eq!(target(40, 20, 360, 0, 3, 96), Target::Nothing);
+        assert_eq!(target(40, 50, 360, 0, 3, 96), Target::Entry(0));
+        assert_eq!(target(40, 50, 360, 68, 3, 96), Target::Entry(1));
+        assert_eq!(target(40, 44 + 3 * 68, 360, 0, 3, 96), Target::Nothing);
     }
 }

@@ -8,7 +8,7 @@ use crate::{
     hotkey::{self, Hotkey, Notice},
     island::Island,
     mission::{self, Mission},
-    notifications::Notifications,
+    notifications::{self, Notifications},
     overlay::{self, Palette},
     search::{self, App},
     top_bar::TopBar,
@@ -106,6 +106,7 @@ pub(crate) unsafe fn shell_menu(hwnd: HWND, launcher: HWND, portuguese: bool) {
             ("Search", "Buscar", dock::SHOW_SPOTLIGHT),
             ("Files", "Arquivos", files::OPEN),
             ("Mission Control", "Controle de Janelas", mission::OPEN),
+            ("Notifications", "Notificações", notifications::OPEN),
             (
                 "Control Center",
                 "Central de Controle",
@@ -422,8 +423,8 @@ unsafe fn run_window(
             None
         };
         // Lives until the GUI loop ends; dropping it removes the hook and stops the worker.
-        let _notifications = if surfaces.notifications {
-            match Notifications::new(instance, (*state).palette) {
+        let notifications = if surfaces.notifications {
+            match Notifications::new(instance, (*state).palette, (*state).portuguese) {
                 Ok(notifications) => Some(notifications),
                 Err(error) => {
                     report(&format!("Could not start notifications ({error})"));
@@ -511,6 +512,17 @@ unsafe fn run_window(
                     if !(*state).can_hide && mission.is_none() && IsWindowVisible(hwnd) == 0 {
                         return Ok(());
                     }
+                }
+                continue;
+            }
+            if msg.hwnd == hwnd && msg.message == notifications::OPEN {
+                match &notifications {
+                    Some(notifications) => notifications.open_centre(),
+                    None => report(if (*state).portuguese {
+                        "Ative notifications = true na configuração"
+                    } else {
+                        "Set notifications = true in the configuration"
+                    }),
                 }
                 continue;
             }

@@ -38,6 +38,28 @@ try {
   Wait-Until { [DesktopSmoke]::FindVisibleForProcess('MonolithNotification', [uint32]$p.Id) -eq [IntPtr]::Zero } 'The banner did not hide.' 9
   "banner hidden after $($sw.ElapsedMilliseconds) ms"
   "The notification banner appeared below the Island without taking focus and hid itself."
+
+  # A second notification, then the Notification Centre lists both, newest first.
+  $xml.LoadXml('<toast><visual><binding template="ToastGeneric"><text>Build finished</text><text>monolith.exe passed validation.</text></binding></visual></toast>')
+  [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\WindowsPowerShell\v1.0\powershell.exe').Show([Windows.UI.Notifications.ToastNotification]::new($xml))
+  Wait-Until { [DesktopSmoke]::FindVisibleForProcess('MonolithNotification', [uint32]$p.Id) -ne [IntPtr]::Zero } 'The second banner did not appear.' 5
+  $launcherWindow = [DesktopSmoke]::FindClass('MonolithSpotlight')
+  [void][DesktopSmoke]::Post($launcherWindow, 0x801F, [UIntPtr]::Zero, [IntPtr]::Zero)
+  Wait-Until { [DesktopSmoke]::FindVisibleForProcess('MonolithNotificationCentre', [uint32]$p.Id) -ne [IntPtr]::Zero } 'The Notification Centre did not open.'
+  $centre = [DesktopSmoke]::FindVisibleForProcess('MonolithNotificationCentre', [uint32]$p.Id)
+  $c = [DesktopSmoke]::Bounds($centre); "centre bounds: $($c -join ',')"
+  $screen = [Windows.Forms.Screen]::PrimaryScreen.WorkingArea
+  if ($c[2] -lt $screen.Right - 40 -or $c[1] -gt $screen.Top + 40) { throw 'The Notification Centre is not at the upper right.' }
+  Start-Sleep -Milliseconds 300
+  if ($capturePath) {
+    $centreCapture = [IO.Path]::ChangeExtension([IO.Path]::GetFullPath($capturePath), '.centre.png')
+    $height = [Math]::Min($c[3] - $c[1], 320)
+    $bmp = [Drawing.Bitmap]::new($c[2] - $c[0], $height); $g = [Drawing.Graphics]::FromImage($bmp)
+    $g.CopyFromScreen($c[0], $c[1], 0, 0, $bmp.Size); $bmp.Save($centreCapture); $g.Dispose(); $bmp.Dispose()
+  }
+  [void][DesktopSmoke]::Post($centre, 0x10, [UIntPtr]::Zero, [IntPtr]::Zero)
+  Wait-Until { [DesktopSmoke]::FindVisibleForProcess('MonolithNotificationCentre', [uint32]$p.Id) -eq [IntPtr]::Zero } 'The Notification Centre did not close.'
+  'The Notification Centre opened at the upper right with the session history and closed on request.'
 } finally {
   if ($p -and !$p.HasExited) { $t = [DesktopSmoke]::FindVisibleForProcess('MonolithTopBar', [uint32]$p.Id); if ($t -ne [IntPtr]::Zero) { [void][DesktopSmoke]::Post($t, 0x10, [UIntPtr]::Zero, [IntPtr]::Zero) }; if (!$p.WaitForExit(3000)) { Stop-Process -InputObject $p } }
   if ($p -and $p.ExitCode -ne 0) { throw "Monolith exited with $($p.ExitCode)." }

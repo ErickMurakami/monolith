@@ -38,4 +38,5 @@
 - Added opt-in Win+1-9 workspace selection and Win+Tab Mission Control through the keyboard bridge.
 - Mission Control shows the current desktop name and position.
 - Added opt-in incoming notification banners below the Island.
+- Added a session-only Notification Centre with unread markers, dismissal and Clear all.
 - Added an experimental Dock taskbar replacement mode with session-only visibility and native recovery.
