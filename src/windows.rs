@@ -289,7 +289,8 @@ pub fn run() -> io::Result<()> {
                 }),
                 top_bar: show_top_bar,
                 island: show_island,
-                notifications: !safe && settings.notifications,
+                notifications: !safe
+                    && (settings.notifications || args.iter().any(|arg| arg == "--notifications")),
                 control_center: !safe && args.iter().any(|arg| arg == "--control-center"),
                 mission: !safe && args.iter().any(|arg| arg == "--mission-control"),
             },

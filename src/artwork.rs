@@ -75,6 +75,32 @@ impl Artwork {
         })
     }
 
+    /// Wrap top-down BGRA rows, premultiplying alpha if the data is straight.
+    pub fn from_bgra(width: u32, height: u32, mut pixels: Vec<u8>) -> Option<Self> {
+        if width == 0 || height == 0 || pixels.len() != (width * height * 4) as usize {
+            return None;
+        }
+        // Premultiplied colour channels can never exceed alpha.
+        let straight = pixels
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .any(|pixel| pixel[..3].iter().any(|&channel| channel > pixel[3]));
+        if straight {
+            for pixel in pixels.as_chunks_mut::<4>().0 {
+                let alpha = u16::from(pixel[3]);
+                for channel in &mut pixel[..3] {
+                    *channel = (u16::from(*channel) * alpha / 255) as u8;
+                }
+            }
+        }
+        Some(Self {
+            width,
+            height,
+            pixels: pixels.into_boxed_slice(),
+        })
+    }
+
     pub fn draw(&self, dc: HDC, area: RECT, background: u32) {
         let width = (area.right - area.left).max(0);
         let height = (area.bottom - area.top).max(0);
@@ -165,5 +191,14 @@ mod tests {
         assert_eq!(fit(10000, 10000, SIDE), None);
         assert_eq!(fit(8, 16, SIDE), Some((8, 16)));
         assert_eq!(fit(2400, 1200, 1024), Some((1024, 512)));
+    }
+
+    #[test]
+    fn premultiplies_only_straight_alpha() {
+        let straight = Artwork::from_bgra(1, 1, vec![200, 100, 50, 128]).unwrap();
+        assert_eq!(&*straight.pixels, &[100, 50, 25, 128]);
+        let premultiplied = Artwork::from_bgra(1, 1, vec![100, 50, 25, 128]).unwrap();
+        assert_eq!(&*premultiplied.pixels, &[100, 50, 25, 128]);
+        assert!(Artwork::from_bgra(2, 1, vec![0; 4]).is_none());
     }
 }

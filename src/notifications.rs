@@ -8,6 +8,7 @@
 //! and Do Not Disturb suppresses the Shell toast and therefore this banner too.
 
 use crate::{
+    artwork::Artwork,
     desktop,
     overlay::{self, Palette},
     windows::wide,
@@ -23,11 +24,14 @@ use std::{
     thread::{self, JoinHandle},
     time::Duration,
 };
+use windows::Foundation::Size;
+use windows::Storage::Streams::IRandomAccessStreamReference;
 use windows::UI::Notifications::{
     KnownNotificationBindings,
     Management::{UserNotificationListener, UserNotificationListenerAccessStatus},
     NotificationKinds, UserNotification,
 };
+use windows::core::Interface;
 use windows_sys::Win32::{
     Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM},
     Graphics::{
@@ -47,11 +51,13 @@ const VISIBLE_MS: u32 = 6000;
 const QUEUE: usize = 4;
 const TOAST_HOST: &str = "Windows.UI.Core.CoreWindow";
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct Incoming {
     pub app: String,
     pub title: String,
     pub body: String,
+    /// The source app's own logo, when Windows provides one.
+    pub icon: Option<Artwork>,
 }
 
 thread_local! {
@@ -197,8 +203,9 @@ unsafe extern "system" fn shell_event(
 }
 
 fn watch(checks: Receiver<()>, deliver: SyncSender<Incoming>, target: usize) {
-    use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx, CoUninitialize};
-    if unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.is_err() {
+    use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx, CoUninitialize};
+    // Shell items for app icons expect a single-threaded apartment.
+    if unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) }.is_err() {
         return;
     }
     let listener = UserNotificationListener::Current().ok().filter(|listener| {
@@ -260,7 +267,80 @@ fn describe(notification: &UserNotification) -> Option<Incoming> {
         .into_iter()
         .filter_map(|text| text.Text().ok().map(|text| text.to_string()))
         .collect();
-    compose(app, texts)
+    let mut incoming = compose(app, texts)?;
+    incoming.icon = notification
+        .AppInfo()
+        .and_then(|info| info.DisplayInfo())
+        .and_then(|display| {
+            display.GetLogo(Size {
+                Width: 64.0,
+                Height: 64.0,
+            })
+        })
+        .and_then(|logo| logo.cast::<IRandomAccessStreamReference>())
+        .ok()
+        .and_then(|logo| Artwork::decode(&logo))
+        .or_else(|| {
+            let id = notification
+                .AppInfo()
+                .and_then(|info| info.AppUserModelId())
+                .ok()?;
+            shell_icon(&id.to_string())
+        });
+    Some(incoming)
+}
+
+/// The Shell's icon for an application identity, for desktop apps without a logo.
+fn shell_icon(app_id: &str) -> Option<Artwork> {
+    use windows::{
+        Win32::{
+            Foundation::SIZE,
+            UI::Shell::{IShellItemImageFactory, SHCreateItemFromParsingName, SIIGBF_ICONONLY},
+        },
+        core::HSTRING,
+    };
+    use windows_sys::Win32::Graphics::Gdi::{
+        BI_RGB, BITMAPINFO, BITMAPINFOHEADER, CreateCompatibleDC, DIB_RGB_COLORS, DeleteDC,
+        DeleteObject, GetDIBits, HBITMAP,
+    };
+    const SIDE: i32 = 64;
+    if app_id.is_empty() || app_id.contains(['\0', '/']) {
+        return None;
+    }
+    let name = HSTRING::from(format!(r"shell:AppsFolder\{app_id}"));
+    let factory: IShellItemImageFactory =
+        unsafe { SHCreateItemFromParsingName(&name, None) }.ok()?;
+    let bitmap = unsafe { factory.GetImage(SIZE { cx: SIDE, cy: SIDE }, SIIGBF_ICONONLY) }.ok()?;
+    let handle = bitmap.0 as HBITMAP;
+    let mut info = BITMAPINFO {
+        bmiHeader: BITMAPINFOHEADER {
+            biSize: size_of::<BITMAPINFOHEADER>() as u32,
+            biWidth: SIDE,
+            biHeight: -SIDE,
+            biPlanes: 1,
+            biBitCount: 32,
+            biCompression: BI_RGB,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let mut pixels = vec![0_u8; (SIDE * SIDE * 4) as usize];
+    let rows = unsafe {
+        let dc = CreateCompatibleDC(null_mut());
+        let rows = GetDIBits(
+            dc,
+            handle,
+            0,
+            SIDE as u32,
+            pixels.as_mut_ptr().cast(),
+            &mut info,
+            DIB_RGB_COLORS,
+        );
+        DeleteDC(dc);
+        DeleteObject(handle);
+        rows
+    };
+    (rows == SIDE).then(|| Artwork::from_bgra(SIDE as u32, SIDE as u32, pixels))?
 }
 
 /// The first text element is the title; the remaining ones form the body.
@@ -275,6 +355,7 @@ fn compose(app: String, texts: Vec<String>) -> Option<Incoming> {
         app: app.trim().to_owned(),
         title,
         body,
+        icon: None,
     })
 }
 
@@ -398,7 +479,19 @@ unsafe fn paint(hwnd: HWND, state: *mut State) {
         if let Some(incoming) = &(*state).current {
             let scale = |value| overlay::scale(value, (*state).dpi);
             SetBkMode(hdc, TRANSPARENT as i32);
-            let left = scale(14);
+            let mut left = scale(14);
+            if let Some(icon) = &incoming.icon {
+                let size = scale(28);
+                let top = (area.bottom - size) / 2;
+                let bounds = RECT {
+                    left: scale(12),
+                    top,
+                    right: scale(12) + size,
+                    bottom: top + size,
+                };
+                icon.draw(hdc, bounds, palette.background);
+                left = bounds.right + scale(10);
+            }
             let right = area.right - scale(14);
             let mut row = scale(8);
             let lines: [(usize, u32, &str, i32, u32); 3] = [
@@ -499,5 +592,14 @@ mod tests {
     #[test]
     fn dims_secondary_text_towards_the_background() {
         assert_eq!(dim(0x00ff_ffff, 0), 0x007f_7f7f);
+    }
+
+    #[test]
+    #[ignore = "resolves an icon through the interactive Shell"]
+    fn resolves_a_desktop_app_icon_through_the_shell() {
+        use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx};
+        unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok().unwrap() };
+        let id = r"{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\WindowsPowerShell\v1.0\powershell.exe";
+        assert!(shell_icon(id).is_some());
     }
 }
