@@ -41,6 +41,8 @@ mod media;
 #[cfg(windows)]
 mod mission;
 #[cfg(windows)]
+mod notifications;
+#[cfg(windows)]
 mod overlay;
 #[cfg(windows)]
 mod preview;

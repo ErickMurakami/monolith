@@ -20,6 +20,7 @@ Foundation and the first native application are implemented. Desktop Experience 
 - `src/artwork.rs` decodes current session artwork on demand with bounded Windows Imaging streams.
 - `src/island.rs` presents real media metadata, controls and timeline progress in a borderless optional overlay.
 - `src/control_center.rs` adjusts the default audio output, displays available battery data and opens documented Windows Settings pages. `src/audio.rs` bounds updates and releases Core Audio subscriptions when the panel closes.
+- `src/notifications.rs` presents new Windows toasts, read-only, in a non-activating banner below the Island when `notifications = true`.
 - `src/workspaces.rs` reads native desktop order and the current desktop, read-only, and selects desktops by position. Mission Control names the current desktop and its position when there is more than one desktop or the desktop has a name. With `workspace_shortcuts = true`, `src/space_bridge.rs` maps Win+1-9 to those desktops and Win+Tab to Mission Control.
 - `src/mission.rs` displays a native borderless window overview with live DWM thumbnails, the shared Dock inventory, paging, keyboard and mouse selection and a Windows Task View action.
 - `src/files.rs` owns a native, on-demand Files window with a custom title surface, virtualised navigation, standard Windows folders and default app activation. `src/files_directory.rs` loads directories off the GUI thread and preserves history on failures.
@@ -100,6 +101,7 @@ The launcher, benchmark, calculator and window-switcher checkpoints are `e86dc9a
 The binary needs no elevation and makes no persistent changes to Windows. Dismiss standalone Spotlight or use **Exit** on the Dock to stop the process and release native hooks. Pass `--safe-mode` to bypass configuration and start Spotlight alone. Rename the configuration file to recover defaults. Portable removal consists of closing the process and removing the executable, with optional removal of the local configuration directory.
 
 The Windows CI checkpoint `4780b92` built and uploaded `monolith.exe`. Run `45824821038` verified locked x64 validation and an AMD64 executable with seven-day artifact retention. The release job skipped the branch push.
+On build 26300.9974 at 125% DPI, `tests/notifications-smoke.ps1` showed a real toast with the Top Bar and Island running. The banner appeared 570-650 ms later, aligned directly below the Island at its width. The foreground window did not change, the banner hid itself after about 6.5 seconds, and the process exited cleanly. The DPI-aware capture was reviewed visually. Not yet implemented: the original app icon, notification actions, the Notification Centre with history, and hiding sensitive content. Native toasts are not suppressed, so a notification currently appears twice while the setting is enabled.
 
 ## Shortcut compatibility
 

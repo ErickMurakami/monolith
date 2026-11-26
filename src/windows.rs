@@ -8,6 +8,7 @@ use crate::{
     hotkey::{self, Hotkey, Notice},
     island::Island,
     mission::{self, Mission},
+    notifications::Notifications,
     overlay::{self, Palette},
     search::{self, App},
     top_bar::TopBar,
@@ -59,6 +60,7 @@ struct SurfaceOptions {
     dock: Option<dock::Settings>,
     top_bar: bool,
     island: bool,
+    notifications: bool,
     control_center: bool,
     mission: bool,
 }
@@ -287,6 +289,7 @@ pub fn run() -> io::Result<()> {
                 }),
                 top_bar: show_top_bar,
                 island: show_island,
+                notifications: !safe && settings.notifications,
                 control_center: !safe && args.iter().any(|arg| arg == "--control-center"),
                 mission: !safe && args.iter().any(|arg| arg == "--mission-control"),
             },
@@ -411,6 +414,18 @@ unsafe fn run_window(
                 Ok(island) => Some(island),
                 Err(error) => {
                     report(&format!("Could not open the Island ({error})"));
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        // Lives until the GUI loop ends; dropping it removes the hook and stops the worker.
+        let _notifications = if surfaces.notifications {
+            match Notifications::new(instance, (*state).palette) {
+                Ok(notifications) => Some(notifications),
+                Err(error) => {
+                    report(&format!("Could not start notifications ({error})"));
                     None
                 }
             }
