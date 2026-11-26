@@ -1,17 +1,72 @@
 name: Windows CI
 
-on: [push, pull_request]
+on:
+  push:
+    branches: ['**']
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+      - 'v[0-9]+.[0-9]+.[0-9]+-*'
+  pull_request:
 
 permissions:
   contents: read
+
+env:
+  RUST_TARGET: x86_64-pc-windows-msvc
 
 jobs:
   validate:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v6
-      - run: rustup toolchain install stable --profile minimal --component clippy --component rustfmt
-      - run: cargo +stable fmt --check
-      - run: cargo +stable clippy --locked --all-targets -- -D warnings
-      - run: cargo +stable test --locked
-      - run: cargo +stable build --release --locked
+        with:
+          persist-credentials: false
+      - name: Install Rust and record compiler version
+        id: toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --component clippy --component rustfmt --target $env:RUST_TARGET
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $version = (rustc +stable --version -v | Select-String '^commit-hash: ').Line.Split(' ')[1]
+          "version=$version" >> $env:GITHUB_OUTPUT
+      - uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git/db
+            target
+          key: ${{ runner.os }}-${{ env.RUST_TARGET }}-${{ steps.toolchain.outputs.version }}-${{ hashFiles('Cargo.lock', 'Cargo.toml') }}
+      - run: cargo +stable fmt --all -- --check
+      - run: cargo +stable clippy --locked --all-targets --target $env:RUST_TARGET -- -D warnings
+      - run: cargo +stable test --locked --target $env:RUST_TARGET
+      - run: cargo +stable build --release --locked --target $env:RUST_TARGET
+      - name: Upload validated Windows x64 executable
+        uses: actions/upload-artifact@v7
+        with:
+          name: monolith-windows-x64
+          path: target/${{ env.RUST_TARGET }}/release/monolith.exe
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    if: github.event_name == 'push' && github.ref_type == 'tag' && !github.event.deleted
+    needs: validate
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: monolith-windows-x64
+          path: release
+      - name: Publish the validated executable for the existing tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          if ($env:RELEASE_TAG -cnotmatch '^v[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$') {
+            throw 'Expected a version tag such as v1.2.3 or v1.2.3-alpha.1.'
+          }
+          $releaseArgs = @('release', 'create', $env:RELEASE_TAG, 'release/monolith.exe', '--verify-tag', '--generate-notes')
+          if ($env:RELEASE_TAG.Contains('-')) { $releaseArgs += '--prerelease' }
+          gh @releaseArgs
