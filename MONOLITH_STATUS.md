@@ -18,7 +18,7 @@ Foundation and the first native application are implemented. Desktop Experience 
 - `src/icons.rs` extracts authentic Shell icons on a bounded worker and renders monochrome or original colours.
 - `src/media.rs` subscribes to Windows media sessions and handles supported transport actions on a bounded WinRT worker.
 - `src/artwork.rs` decodes current session artwork on demand with bounded Windows Imaging streams.
-- `src/island.rs` presents real media metadata, controls and timeline progress in a borderless optional overlay.
+- `src/island.rs` presents real media metadata, controls and timeline progress in a borderless optional overlay. Expanded, it adds the album, elapsed and total time, supported shuffle and repeat, and click-to-seek.
 - `src/control_center.rs` adjusts the default audio output, displays available battery data and opens documented Windows Settings pages. `src/audio.rs` bounds updates and releases Core Audio subscriptions when the panel closes.
 - `src/notifications.rs` presents new Windows toasts, read-only, in a non-activating banner below the Island when `notifications = true`.
 - `src/workspaces.rs` reads native desktop order and the current desktop, read-only, and selects desktops by position. Mission Control names the current desktop and its position when there is more than one desktop or the desktop has a name. With `workspace_shortcuts = true`, `src/space_bridge.rs` maps Win+1-9 to those desktops and Win+Tab to Mission Control.
@@ -103,6 +103,7 @@ The binary needs no elevation and makes no persistent changes to Windows. Dismis
 
 The Windows CI checkpoint `4780b92` built and uploaded `monolith.exe`. Run `45824821038` verified locked x64 validation and an AMD64 executable with seven-day artifact retention. The release job skipped the branch push.
 On build 26300.9974 at 125% DPI, `tests/notifications-smoke.ps1` showed a real toast with the Top Bar and Island running. The banner appeared 570-650 ms later, aligned directly below the Island at its width. The foreground window did not change, the banner hid itself after about 6.5 seconds, and the process exited cleanly. The DPI-aware capture was reviewed visually. The banner shows the app logo, or the Shell icon for desktop apps (verified with the PowerShell sender). The test runs with the real profile because the Shell app catalogue depends on it. The same test opened the Notification Centre by message. It listed both test notifications, newest first, at the upper right, and closed on request; the capture was reviewed. Not yet implemented: notification actions, removing entries from Windows, and hiding sensitive content. Native toasts are not suppressed, so a notification currently appears twice while the setting is enabled.
+`tests/island-controls-smoke.ps1` drives the Island only through messages posted to Monolith windows. With a real Helium media session, it verified the album in the expanded title only, `0:00 / 1:00` timing, hidden shuffle and repeat for a session without support, and a seek from 0:00 to 0:30 on a click at the midpoint of the bar. The capture was reviewed. Shuffle and repeat await a session that supports them, such as Spotify.
 
 ## Shortcut compatibility
 

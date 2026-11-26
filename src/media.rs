@@ -18,6 +18,7 @@ use windows::{
         GlobalSystemMediaTransportControlsSessionMediaProperties as MediaProperties,
         GlobalSystemMediaTransportControlsSessionPlaybackStatus as Status,
     },
+    Media::MediaPlaybackAutoRepeatMode as AutoRepeat,
     Win32::System::WinRT::{RO_INIT_MULTITHREADED, RoInitialize, RoUninitialize},
     core::AgileReference,
 };
@@ -33,12 +34,35 @@ pub struct NowPlaying {
     pub generation: u64,
     pub title: String,
     pub artist: String,
+    /// Empty when the session reports no album.
+    pub album: String,
     pub playing: bool,
     pub toggle: bool,
     pub previous: bool,
     pub next: bool,
+    /// Present only when the session supports changing it.
+    pub shuffle: Option<bool>,
+    pub repeat: Option<Repeat>,
+    pub seek: bool,
     pub timeline: Option<Timeline>,
     pub artwork: Option<Arc<Artwork>>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Repeat {
+    Off,
+    List,
+    Track,
+}
+
+impl Repeat {
+    fn next(self) -> AutoRepeat {
+        match self {
+            Self::Off => AutoRepeat::List,
+            Self::List => AutoRepeat::Track,
+            Self::Track => AutoRepeat::None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -51,7 +75,8 @@ pub struct Timeline {
 }
 
 impl Timeline {
-    pub fn position_at(self, now: i64, playing: bool) -> (u32, bool) {
+    /// Offset from the start in 100-nanosecond units, and whether it is still moving.
+    fn offset_at(self, now: i64, playing: bool) -> (i128, bool) {
         let rate = self
             .rate_milli
             .filter(|_| playing && self.measured_at > 0)
@@ -62,7 +87,40 @@ impl Timeline {
         let position =
             (i128::from(self.position) - i128::from(self.start) + advance).clamp(0, duration);
         let continues = (rate > 0 && position < duration) || (rate < 0 && position > 0);
-        ((position * 1000 / duration) as u32, continues)
+        (position, continues)
+    }
+
+    pub fn position_at(self, now: i64, playing: bool) -> (u32, bool) {
+        let (position, continues) = self.offset_at(now, playing);
+        (
+            (position * 1000 / i128::from(self.duration)) as u32,
+            continues,
+        )
+    }
+
+    /// Elapsed and total whole seconds at `now`.
+    pub fn seconds_at(self, now: i64, playing: bool) -> (u64, u64) {
+        let (position, _) = self.offset_at(now, playing);
+        (
+            (position / 10_000_000) as u64,
+            (self.duration / 10_000_000) as u64,
+        )
+    }
+
+    /// The session position, in 100-nanosecond units, for a fraction in thousandths.
+    fn seek_target(self, permille: u32) -> i64 {
+        let offset = i128::from(self.duration) * i128::from(permille.min(1000)) / 1000;
+        self.start + offset as i64
+    }
+}
+
+/// `m:ss`, or `h:mm:ss` for an hour or more.
+pub fn clock(seconds: u64) -> String {
+    let (hours, minutes, seconds) = (seconds / 3600, seconds / 60 % 60, seconds % 60);
+    if hours > 0 {
+        format!("{hours}:{minutes:02}:{seconds:02}")
+    } else {
+        format!("{minutes}:{seconds:02}")
     }
 }
 
@@ -71,6 +129,10 @@ pub enum Action {
     Toggle,
     Previous,
     Next,
+    Shuffle,
+    Repeat,
+    /// Position in thousandths of the timeline.
+    Seek(u32),
 }
 
 enum Command {
@@ -383,6 +445,38 @@ fn read(session: &Session, generation: u64) -> Option<(NowPlaying, MediaProperti
             },
         previous: flags.IsPreviousEnabled().unwrap_or(false),
         next: flags.IsNextEnabled().unwrap_or(false),
+        album: media
+            .AlbumTitle()
+            .map_or_else(|_| String::new(), |text| text.to_string_lossy())
+            .chars()
+            .take(100)
+            .collect(),
+        shuffle: flags
+            .IsShuffleEnabled()
+            .unwrap_or(false)
+            .then(|| {
+                playback
+                    .IsShuffleActive()
+                    .and_then(|value| value.Value())
+                    .ok()
+            })
+            .flatten(),
+        repeat: flags
+            .IsRepeatEnabled()
+            .unwrap_or(false)
+            .then(|| {
+                playback
+                    .AutoRepeatMode()
+                    .and_then(|value| value.Value())
+                    .ok()
+            })
+            .flatten()
+            .map(|mode| match mode {
+                AutoRepeat::Track => Repeat::Track,
+                AutoRepeat::List => Repeat::List,
+                _ => Repeat::Off,
+            }),
+        seek: flags.IsPlaybackPositionEnabled().unwrap_or(false),
         timeline: read_timeline(session, rate),
         artwork: None,
     };
@@ -417,6 +511,27 @@ fn perform(session: &Session, action: Action) {
             session.TrySkipPreviousAsync()
         }
         Action::Next if controls.IsNextEnabled().unwrap_or(false) => session.TrySkipNextAsync(),
+        Action::Shuffle if controls.IsShuffleEnabled().unwrap_or(false) => {
+            let active = info
+                .IsShuffleActive()
+                .and_then(|value| value.Value())
+                .unwrap_or(false);
+            session.TryChangeShuffleActiveAsync(!active)
+        }
+        Action::Repeat if controls.IsRepeatEnabled().unwrap_or(false) => {
+            let current = match info.AutoRepeatMode().and_then(|value| value.Value()) {
+                Ok(AutoRepeat::Track) => Repeat::Track,
+                Ok(AutoRepeat::List) => Repeat::List,
+                _ => Repeat::Off,
+            };
+            session.TryChangeAutoRepeatModeAsync(current.next())
+        }
+        Action::Seek(permille) if controls.IsPlaybackPositionEnabled().unwrap_or(false) => {
+            let Some(timeline) = read_timeline(session, None) else {
+                return;
+            };
+            session.TryChangePlaybackPositionAsync(timeline.seek_target(permille))
+        }
         Action::Toggle if controls.IsPlayPauseToggleEnabled().unwrap_or(false) => {
             session.TryTogglePlayPauseAsync()
         }
@@ -464,5 +579,26 @@ mod tests {
             .position_at(2_040_000_000, true),
             (166, false)
         );
+    }
+
+    #[test]
+    fn formats_times_and_targets_seek_positions() {
+        assert_eq!(clock(0), "0:00");
+        assert_eq!(clock(225), "3:45");
+        assert_eq!(clock(3_725), "1:02:05");
+        let timeline = Timeline {
+            start: 10_000_000,
+            duration: 600_000_000,
+            position: 110_000_000,
+            measured_at: 2_000_000_000,
+            rate_milli: Some(1000),
+        };
+        // One minute total, ten seconds in while paused.
+        assert_eq!(timeline.seconds_at(2_040_000_000, false), (10, 60));
+        // Playing at normal rate for four seconds.
+        assert_eq!(timeline.seconds_at(2_040_000_000, true), (14, 60));
+        assert_eq!(timeline.seek_target(0), 10_000_000);
+        assert_eq!(timeline.seek_target(500), 310_000_000);
+        assert_eq!(timeline.seek_target(5_000), 610_000_000);
     }
 }

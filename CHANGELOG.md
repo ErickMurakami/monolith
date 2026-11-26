@@ -40,4 +40,5 @@
 - Added opt-in incoming notification banners below the Island.
 - Added a session-only Notification Centre with unread markers, dismissal and Clear all.
 - The Top Bar has Control Center and Notification Centre buttons with an unread indicator.
+- The expanded Island shows album and elapsed/total time, offers supported shuffle and repeat, and seeks on click.
 - Added an experimental Dock taskbar replacement mode with session-only visibility and native recovery.

@@ -2,7 +2,7 @@
 
 use crate::{
     desktop,
-    media::{self, Action, Media, NowPlaying},
+    media::{self, Action, Media, NowPlaying, Repeat},
     overlay::{self, Palette},
     windows::{shell_menu, wide},
 };
@@ -12,7 +12,7 @@ use windows_sys::Win32::{
     Graphics::Gdi::*,
     System::{
         SystemInformation::GetSystemTimeAsFileTime,
-        SystemServices::{SS_CENTERIMAGE, SS_ENDELLIPSIS, SS_NOTIFY, SS_OWNERDRAW},
+        SystemServices::{SS_CENTERIMAGE, SS_ENDELLIPSIS, SS_NOTIFY, SS_OWNERDRAW, SS_RIGHT},
     },
     UI::{
         Accessibility::*,
@@ -29,6 +29,9 @@ const PREVIOUS: usize = 2;
 const TOGGLE: usize = 3;
 const NEXT: usize = 4;
 const ARTWORK: usize = 5;
+const SHUFFLE: usize = 6;
+const REPEAT: usize = 7;
+const TIME: usize = 8;
 const REPOSITION: usize = 1;
 const PROGRESS: usize = 2;
 
@@ -57,6 +60,10 @@ struct State {
     media: Option<Media>,
     current: Option<NowPlaying>,
     expanded: bool,
+    /// Shuffle and repeat, shown only when the session supports them.
+    extras: [HWND; 2],
+    /// Elapsed and total time beside the progress bar.
+    time: HWND,
 }
 
 impl Island {
@@ -114,6 +121,8 @@ impl Island {
                     media: None,
                     current: None,
                     expanded: false,
+                    extras: [null_mut(); 2],
+                    time: null_mut(),
                 }),
             };
             if island.state.brush.is_null() {
@@ -156,6 +165,34 @@ impl Island {
                 );
                 if control.is_null() {
                     return Err(io::Error::last_os_error());
+                }
+            }
+            for (id, class, style) in [
+                (SHUFFLE, "BUTTON", BS_OWNERDRAW as u32),
+                (REPEAT, "BUTTON", BS_OWNERDRAW as u32),
+                (TIME, "STATIC", SS_RIGHT | SS_CENTERIMAGE),
+            ] {
+                let child = CreateWindowExW(
+                    0,
+                    wide(class).as_ptr(),
+                    std::ptr::null(),
+                    WS_CHILD | style,
+                    0,
+                    0,
+                    0,
+                    0,
+                    hwnd,
+                    id as *mut c_void,
+                    instance,
+                    null_mut(),
+                );
+                if child.is_null() {
+                    return Err(io::Error::last_os_error());
+                }
+                match id {
+                    SHUFFLE => island.state.extras[0] = child,
+                    REPEAT => island.state.extras[1] = child,
+                    _ => island.state.time = child,
                 }
             }
             island.state.media = Some(Media::connect(hwnd)?);
@@ -248,6 +285,21 @@ unsafe extern "system" fn progress_proc(
         match msg {
             WM_ERASEBKGND => return 1,
             WM_NCPAINT | WM_NCCALCSIZE => return 0,
+            WM_LBUTTONUP => {
+                let state = reference as *const State;
+                if let (Some(media), Some(current)) =
+                    ((*state).media.as_ref(), (*state).current.as_ref())
+                    && current.seek
+                {
+                    let mut bounds = RECT::default();
+                    GetClientRect(hwnd, &mut bounds);
+                    let x = (lp & 0xffff) as i16 as i32;
+                    let width = (bounds.right - bounds.left).max(1);
+                    let permille = (x.clamp(0, width) * 1000 / width) as u32;
+                    media.perform(current.generation, Action::Seek(permille));
+                }
+                return 0;
+            }
             WM_PAINT => {
                 let palette = (*(reference as *const State)).palette;
                 let mut paint = PAINTSTRUCT::default();
@@ -256,7 +308,13 @@ unsafe extern "system" fn progress_proc(
                 GetClientRect(hwnd, &mut bounds);
                 let fraction = DefSubclassProc(hwnd, PBM_GETPOS, 0, 0).clamp(0, 1000) as i32;
                 let brush = GetStockObject(DC_BRUSH) as HBRUSH;
-                let previous = SetDCBrushColor(dc, palette.surface);
+                let previous = SetDCBrushColor(dc, palette.background);
+                FillRect(dc, &bounds, brush);
+                // Draw a thin bar centred in the taller hit area.
+                let thickness = overlay::scale(3, GetDpiForWindow(hwnd));
+                bounds.top += (bounds.bottom - bounds.top - thickness) / 2;
+                bounds.bottom = bounds.top + thickness;
+                SetDCBrushColor(dc, palette.surface);
                 FillRect(dc, &bounds, brush);
                 bounds.right = bounds.left + (bounds.right - bounds.left) * fraction / 1000;
                 SetDCBrushColor(dc, palette.accent);
@@ -362,6 +420,15 @@ unsafe fn layout(hwnd: HWND, state: *mut State) {
             (_, true) => current.title.clone(),
             _ => format!("{}   ·   {}", current.title, current.artist),
         };
+        let title = if expanded && !current.album.is_empty() {
+            format!("{title}   ·   {}", current.album)
+        } else {
+            title
+        };
+        let shuffle = current.shuffle;
+        let repeat = current.repeat;
+        let extras = (*state).extras;
+        let time = (*state).time;
         let playing = current.playing;
         let show_progress = expanded && current.timeline.is_some() && !(*state).progress.is_null();
         let availability = [current.previous, current.toggle, current.next];
@@ -386,7 +453,7 @@ unsafe fn layout(hwnd: HWND, state: *mut State) {
                 wide("Segoe UI").as_ptr(),
             );
             if !font.is_null() {
-                for child in controls {
+                for child in controls.into_iter().chain(extras).chain([time]) {
                     SendMessageW(child, WM_SETFONT, font as usize, 0);
                 }
                 DeleteObject((*state).font);
@@ -457,38 +524,81 @@ unsafe fn layout(hwnd: HWND, state: *mut State) {
             (true, true) => ["Anterior", "Pausar", "Próxima"],
             (true, false) => ["Anterior", "Reproduzir", "Próxima"],
         };
-        let step = (width - 2 * inset).max(3) / 3;
+        // Shuffle and repeat flank the transport controls only when supported.
+        let mut row: Vec<(HWND, String, bool)> = Vec::with_capacity(5);
+        if let Some(active) = shuffle.filter(|_| expanded) {
+            let caption = match (portuguese, active) {
+                (false, false) => "Shuffle",
+                (false, true) => "Shuffle ●",
+                (true, false) => "Aleatório",
+                (true, true) => "Aleatório ●",
+            };
+            row.push((extras[0], caption.to_owned(), true));
+        } else {
+            ShowWindow(extras[0], SW_HIDE);
+        }
         for (index, &button) in controls.iter().skip(1).enumerate() {
             if expanded {
-                SetWindowTextW(button, wide(captions[index]).as_ptr());
-                EnableWindow(button, i32::from(availability[index]));
-                SetWindowPos(
-                    button,
-                    null_mut(),
-                    inset + step * index as i32,
-                    label_height + scale(3),
-                    (step - scale(3)).max(1),
-                    scale(27),
-                    SWP_SHOWWINDOW | SWP_NOZORDER | SWP_NOACTIVATE,
-                );
-                InvalidateRect(button, std::ptr::null(), 1);
+                row.push((button, captions[index].to_owned(), availability[index]));
             } else {
                 ShowWindow(button, SW_HIDE);
             }
         }
+        if let Some(mode) = repeat.filter(|_| expanded) {
+            let caption = match (portuguese, mode) {
+                (false, Repeat::Off) => "Repeat",
+                (false, Repeat::List) => "Repeat all",
+                (false, Repeat::Track) => "Repeat one",
+                (true, Repeat::Off) => "Repetir",
+                (true, Repeat::List) => "Repetir tudo",
+                (true, Repeat::Track) => "Repetir uma",
+            };
+            row.push((extras[1], caption.to_owned(), true));
+        } else {
+            ShowWindow(extras[1], SW_HIDE);
+        }
+        let step = (width - 2 * inset).max(row.len().max(1) as i32) / row.len().max(1) as i32;
+        for (index, (button, caption, enabled)) in row.into_iter().enumerate() {
+            SetWindowTextW(button, wide(&caption).as_ptr());
+            EnableWindow(button, i32::from(enabled));
+            SetWindowPos(
+                button,
+                null_mut(),
+                inset + step * index as i32,
+                label_height + scale(3),
+                (step - scale(3)).max(1),
+                scale(27),
+                SWP_SHOWWINDOW | SWP_NOZORDER | SWP_NOACTIVATE,
+            );
+            InvalidateRect(button, std::ptr::null(), 1);
+        }
         let progress = (*state).progress;
         if show_progress {
+            // A taller hit area than the drawn bar makes seeking practical.
+            let time_width = scale(84);
             SetWindowPos(
                 progress,
                 null_mut(),
                 inset,
-                label_height + scale(35),
-                (width - 2 * inset).max(1),
-                scale(3),
+                label_height + scale(31),
+                (width - 2 * inset - time_width - scale(6)).max(1),
+                scale(11),
                 SWP_SHOWWINDOW | SWP_NOZORDER | SWP_NOACTIVATE,
             );
-        } else if !progress.is_null() {
-            ShowWindow(progress, SW_HIDE);
+            SetWindowPos(
+                time,
+                null_mut(),
+                width - inset - time_width,
+                label_height + scale(30),
+                time_width,
+                scale(13),
+                SWP_SHOWWINDOW | SWP_NOZORDER | SWP_NOACTIVATE,
+            );
+        } else {
+            if !progress.is_null() {
+                ShowWindow(progress, SW_HIDE);
+            }
+            ShowWindow(time, SW_HIDE);
         }
         SetWindowPos(
             hwnd,
@@ -523,6 +633,9 @@ unsafe fn update_progress(hwnd: HWND, state: *mut State) {
         GetSystemTimeAsFileTime(&mut timestamp);
         let now = (i64::from(timestamp.dwHighDateTime) << 32) | i64::from(timestamp.dwLowDateTime);
         let (position, continues) = timeline.position_at(now, current.playing);
+        let (elapsed, total) = timeline.seconds_at(now, current.playing);
+        let text = format!("{} / {}", media::clock(elapsed), media::clock(total));
+        SetWindowTextW((*state).time, wide(&text).as_ptr());
         SendMessageW(bar, PBM_SETPOS, position as usize, 0);
         InvalidateRect(bar, std::ptr::null(), 0);
         if continues {
@@ -556,6 +669,8 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                         PREVIOUS => Action::Previous,
                         TOGGLE => Action::Toggle,
                         NEXT => Action::Next,
+                        SHUFFLE => Action::Shuffle,
+                        REPEAT => Action::Repeat,
                         _ => return 0,
                     };
                     if let (Some(media), Some(current)) =
