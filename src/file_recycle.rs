@@ -331,7 +331,10 @@ mod tests {
                 .duration_since(SystemTime::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos();
-            let id = format!("monolith-recycle-{}-{stamp}", std::process::id());
+            // Parallel tests can share a timestamp; the counter keeps fixtures distinct.
+            static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+            let serial = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let id = format!("monolith-recycle-{}-{stamp}-{serial}", std::process::id());
             let directory = env::temp_dir().join(&id);
             // Fail on collision. Every later operation is on this newly created fixture.
             fs::create_dir(&directory).unwrap();

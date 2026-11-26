@@ -532,8 +532,11 @@ mod tests {
                 .duration_since(SystemTime::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos();
+            // Parallel tests can share a timestamp; the counter keeps fixtures distinct.
+            static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+            let serial = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             let root = env::temp_dir().join(format!(
-                "monolith-git-status-{}-{nonce}",
+                "monolith-git-status-{}-{nonce}-{serial}",
                 std::process::id()
             ));
             fs::create_dir(&root).unwrap();
