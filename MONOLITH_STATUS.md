@@ -20,7 +20,7 @@ Foundation and the first native application are implemented. Desktop Experience 
 - `src/artwork.rs` decodes current session artwork on demand with bounded Windows Imaging streams.
 - `src/island.rs` presents real media metadata, controls and timeline progress in a borderless optional overlay.
 - `src/control_center.rs` adjusts the default audio output, displays available battery data and opens documented Windows Settings pages. `src/audio.rs` bounds updates and releases Core Audio subscriptions when the panel closes.
-- `src/workspaces.rs` reads native desktop order and the current desktop, read-only, and selects desktops by position. With `workspace_shortcuts = true`, `src/space_bridge.rs` maps Win+1-9 to those desktops and Win+Tab to Mission Control.
+- `src/workspaces.rs` reads native desktop order and the current desktop, read-only, and selects desktops by position. Mission Control names the current desktop and its position when there is more than one desktop or the desktop has a name. With `workspace_shortcuts = true`, `src/space_bridge.rs` maps Win+1-9 to those desktops and Win+Tab to Mission Control.
 - `src/mission.rs` displays a native borderless window overview with live DWM thumbnails, the shared Dock inventory, paging, keyboard and mouse selection and a Windows Task View action.
 - `src/files.rs` owns a native, on-demand Files window with a custom title surface, virtualised navigation, standard Windows folders and default app activation. `src/files_directory.rs` loads directories off the GUI thread and preserves history on failures.
 - `src/quick_look.rs` opens a borderless text, image, PDF or metadata preview on Space in Files. `src/quick_content.rs` bounds reads and pixel counts and uses platform decoders.

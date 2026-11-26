@@ -6,11 +6,15 @@
 //! Win+Ctrl+Left/Right shortcuts, so Explorer remains the owner of desktop state.
 
 use crate::space_bridge::INJECTED;
-use std::{io, mem::size_of, ptr::null_mut};
+use std::{
+    io,
+    mem::{size_of, size_of_val},
+    ptr::null_mut,
+};
 use windows_sys::Win32::{
     Foundation::ERROR_SUCCESS,
     System::{
-        Registry::{HKEY_CURRENT_USER, RRF_RT_REG_BINARY, RegGetValueW},
+        Registry::{HKEY_CURRENT_USER, RRF_RT_REG_BINARY, RRF_RT_REG_SZ, RegGetValueW},
         RemoteDesktop::ProcessIdToSessionId,
         Threading::GetCurrentProcessId,
     },
@@ -65,6 +69,72 @@ fn binary(key: &str, value: &str) -> io::Result<Vec<u8>> {
     }
     buffer.truncate(size as usize);
     Ok(buffer)
+}
+
+impl Workspaces {
+    /// A short description of the current desktop, such as "Work · 2 of 3", when
+    /// more than one desktop exists or the current one has a user-assigned name.
+    pub fn summary(&self, portuguese: bool) -> Option<String> {
+        let index = self.current?;
+        let name = name(&self.ids[index]);
+        if self.ids.len() < 2 && name.is_none() {
+            return None;
+        }
+        let number = index + 1;
+        let label = name.unwrap_or_else(|| {
+            if portuguese {
+                format!("Área {number}")
+            } else {
+                format!("Desktop {number}")
+            }
+        });
+        let of = if portuguese { "de" } else { "of" };
+        Some(format!("{label} · {number} {of} {}", self.ids.len()))
+    }
+}
+
+/// The name a user gave the desktop in Task View, if any.
+fn name(id: &DesktopId) -> Option<String> {
+    let key: Vec<u16> = format!(r"{DESKTOPS}\Desktops\{}", guid_text(id))
+        .encode_utf16()
+        .chain([0])
+        .collect();
+    let value: Vec<u16> = "Name".encode_utf16().chain([0]).collect();
+    let mut buffer = [0_u16; 256];
+    let mut size = size_of_val(&buffer) as u32;
+    let status = unsafe {
+        RegGetValueW(
+            HKEY_CURRENT_USER,
+            key.as_ptr(),
+            value.as_ptr(),
+            RRF_RT_REG_SZ,
+            null_mut(),
+            buffer.as_mut_ptr().cast(),
+            &mut size,
+        )
+    };
+    if status != ERROR_SUCCESS {
+        return None;
+    }
+    let length = buffer
+        .iter()
+        .position(|&unit| unit == 0)
+        .unwrap_or(buffer.len());
+    let name = String::from_utf16_lossy(&buffer[..length]);
+    let name = name.trim();
+    (!name.is_empty()).then(|| name.to_owned())
+}
+
+/// Registry key spelling of a GUID stored in its little-endian binary layout.
+fn guid_text(id: &DesktopId) -> String {
+    let d1 = u32::from_le_bytes([id[0], id[1], id[2], id[3]]);
+    let d2 = u16::from_le_bytes([id[4], id[5]]);
+    let d3 = u16::from_le_bytes([id[6], id[7]]);
+    let tail: String = id[10..].iter().map(|byte| format!("{byte:02X}")).collect();
+    format!(
+        "{{{d1:08X}-{d2:04X}-{d3:04X}-{:02X}{:02X}-{tail}}}",
+        id[8], id[9]
+    )
 }
 
 /// Steps from the current desktop to `target`, or `None` when either is unknown.
@@ -165,6 +235,35 @@ mod tests {
             ..workspaces
         };
         assert_eq!(steps(&unknown, 0), None);
+    }
+
+    #[test]
+    fn summarises_unnamed_desktops_by_position() {
+        // Identities without a registry entry fall back to a numbered label.
+        let workspaces = Workspaces {
+            ids: vec![[0xa5; 16], [0x5a; 16], [0x3c; 16]],
+            current: Some(1),
+        };
+        assert_eq!(
+            workspaces.summary(false).as_deref(),
+            Some("Desktop 2 · 2 of 3")
+        );
+        assert_eq!(workspaces.summary(true).as_deref(), Some("Área 2 · 2 de 3"));
+        let single = Workspaces {
+            ids: vec![[0xa5; 16]],
+            current: Some(0),
+        };
+        assert_eq!(single.summary(false), None);
+    }
+
+    #[test]
+    fn spells_registry_guid_keys() {
+        // 83578b8d-d29f-42dc-8bb0-b2c1e3cb7dd4 in its binary layout.
+        let id = [
+            0x8d, 0x8b, 0x57, 0x83, 0x9f, 0xd2, 0xdc, 0x42, 0x8b, 0xb0, 0xb2, 0xc1, 0xe3, 0xcb,
+            0x7d, 0xd4,
+        ];
+        assert_eq!(guid_text(&id), "{83578B8D-D29F-42DC-8BB0-B2C1E3CB7DD4}");
     }
 
     #[test]

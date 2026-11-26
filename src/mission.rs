@@ -378,7 +378,14 @@ unsafe fn render(hwnd: HWND, state: *mut State, work: RECT) {
         } else {
             (*state).label("Open windows", "Janelas abertas")
         };
-        set_title(hwnd, title);
+        // The overview shows windows on the current desktop; name that desktop.
+        match crate::workspaces::read()
+            .ok()
+            .and_then(|workspaces| workspaces.summary((*state).portuguese))
+        {
+            Some(workspace) => set_title(hwnd, &format!("{workspace} · {title}")),
+            None => set_title(hwnd, title),
+        }
         let position = |id, x, y, width, height| {
             SetWindowPos(
                 GetDlgItem(hwnd, id),

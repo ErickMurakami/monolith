@@ -36,4 +36,5 @@
 - Added an opt-in Win+Space bridge for Spotlight that keeps keys typed before activation.
 - Shift+click on a Dock pin starts another instance.
 - Added opt-in Win+1-9 workspace selection and Win+Tab Mission Control through the keyboard bridge.
+- Mission Control shows the current desktop name and position.
 - Added an experimental Dock taskbar replacement mode with session-only visibility and native recovery.

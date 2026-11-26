@@ -166,6 +166,10 @@ try {
                 $panel = Find-Mission $script:launcher
                 $panel -ne [IntPtr]::Zero -and [DesktopSmoke]::GetForegroundWindow() -eq $panel
             } 'Win+Tab did not open Mission Control in the foreground.'
+            $heading = [Text.StringBuilder]::new(256)
+            [void][DesktopSmoke]::Read([DesktopSmoke]::GetDlgItem((Find-Mission $script:launcher), 1), 0xD, [UIntPtr]::new([uint32]256), $heading)
+            $position = [Array]::IndexOf($ids, $leftId) + 1
+            if (!$heading.ToString().Contains("$position of $($ids.Count)")) { throw "Mission Control did not name the current desktop: $heading" }
             if (![DesktopSmoke]::PressChord([uint16[]]@(0x5B), 0x09, $false)) { throw 'Could not send the second Win+Tab.' }
             Wait-Until { (Find-Mission $script:launcher) -eq [IntPtr]::Zero } 'A second Win+Tab did not close Mission Control.'
             $spotlight = [DesktopSmoke]::FindClass('MonolithSpotlight')
