@@ -573,48 +573,6 @@ unsafe fn set_title(hwnd: HWND, title: &str) {
     }
 }
 
-fn send_shell_shortcut(keys: &[u16]) -> bool {
-    unsafe {
-        let modifiers = [VK_LWIN, VK_RWIN, VK_SHIFT, VK_CONTROL, VK_MENU];
-        if modifiers
-            .into_iter()
-            .chain(keys.iter().copied())
-            .any(|key| GetAsyncKeyState(i32::from(key)) < 0)
-        {
-            return false;
-        }
-        let input = |key, flags| INPUT {
-            r#type: INPUT_KEYBOARD,
-            Anonymous: INPUT_0 {
-                ki: KEYBDINPUT {
-                    wVk: key,
-                    dwFlags: if matches!(key, VK_LWIN | VK_LEFT | VK_RIGHT) {
-                        flags | KEYEVENTF_EXTENDEDKEY
-                    } else {
-                        flags
-                    },
-                    ..Default::default()
-                },
-            },
-        };
-        let count = keys.len();
-        let mut events = Vec::with_capacity(count * 2);
-        events.extend(keys.iter().map(|&key| input(key, 0)));
-        events.extend(keys.iter().rev().map(|&key| input(key, KEYEVENTF_KEYUP)));
-        let size = size_of::<INPUT>() as i32;
-        let sent = SendInput(events.len() as u32, events.as_ptr(), size) as usize;
-        if sent == events.len() {
-            return true;
-        }
-        if sent > 0 {
-            // Release only keys from the partially inserted sequence that still need a key-up.
-            let release = &events[(count * 2 - sent.min(count)).max(sent)..];
-            SendInput(release.len() as u32, release.as_ptr(), size);
-        }
-        false
-    }
-}
-
 unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     unsafe {
         let state = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut State;
@@ -640,11 +598,11 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                     TASK_VIEW | DESKTOP_LEFT | DESKTOP_RIGHT => {
                         let accepted = GetForegroundWindow() == hwnd
                             && match id {
-                                TASK_VIEW => send_shell_shortcut(&[VK_LWIN, VK_TAB]),
+                                TASK_VIEW => crate::workspaces::press(&[VK_LWIN, VK_TAB], 1),
                                 DESKTOP_LEFT => {
-                                    send_shell_shortcut(&[VK_LWIN, VK_LCONTROL, VK_LEFT])
+                                    crate::workspaces::press(&[VK_LWIN, VK_LCONTROL, VK_LEFT], 1)
                                 }
-                                _ => send_shell_shortcut(&[VK_LWIN, VK_LCONTROL, VK_RIGHT]),
+                                _ => crate::workspaces::press(&[VK_LWIN, VK_LCONTROL, VK_RIGHT], 1),
                             };
                         if accepted {
                             ShowWindow(hwnd, SW_HIDE);

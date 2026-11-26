@@ -58,6 +58,8 @@ mod taskbar;
 mod top_bar;
 #[cfg(windows)]
 mod windows;
+#[cfg(windows)]
+mod workspaces;
 
 #[cfg(windows)]
 fn main() {

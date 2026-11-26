@@ -42,6 +42,7 @@ Select **Show Git** or press Ctrl+G to see the current branch, locally known ups
 Use **Open terminal here** in the Files context menu to start a terminal in the displayed directory. Monolith uses Windows Terminal when its alias is available and uses Windows PowerShell as the fallback. Set `files_ide` to the absolute path of a local IDE executable to show **Open in configured IDE**. It opens the selected folder, or the displayed directory when a folder is unavailable in the selection.
 
 Monolith tries Win+Space first and uses Ctrl+Alt+Space as a fallback when Windows reserves the preferred chord. Set `win_space_override = true` (experimental) to keep Win+Space working anyway: a keyboard hook on its own thread sends the registered fallback chord when you press Win+Space and replays anything typed before Spotlight has focus, so the first characters are not lost. The hook is removed when Monolith exits, and Win+Space returns to Windows (input language switching). With `--resident`, pressing the registered shortcut again dismisses Spotlight. Escape returns focus to the previous window when Windows permits it. Safe mode disables global shortcuts.
+Set `workspace_shortcuts = true` (experimental) to let Win+1 through Win+9 select native Windows desktops by their Task View order and Win+Tab open or close Mission Control. Monolith reads the desktop order from Explorer and switches with the native Win+Ctrl+Left/Right shortcuts once you release the Windows key, so desktops stay owned by Windows. Windows keeps Win+Shift+number and Task View remains available from Mission Control.
 
 Monolith reads `%LOCALAPPDATA%\Monolith\config.toml` at startup.
 
@@ -51,6 +52,7 @@ language = "english"        # english, portuguese
 # files_ide = 'C:\Tools\IDE.exe'
 shortcut = "ctrl-alt-space" # win-space, ctrl-alt-space, disabled
 # win_space_override = true # experimental Win+Space bridge when Windows reserves the chord
+# workspace_shortcuts = true # experimental Win+1-9 desktop selection and Win+Tab Mission Control
 dock = false               # set true to opt in
 dock_pins = ["Visual Studio Code"] # exact Start menu shortcut names, in display order
 dock_monitor = "primary"           # primary, active

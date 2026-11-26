@@ -253,7 +253,12 @@ pub fn run() -> io::Result<()> {
             !safe && (settings.dock || replace_taskbar || args.iter().any(|arg| arg == "--dock"));
         let show_top_bar = !safe && (settings.top_bar || args.iter().any(|arg| arg == "--top-bar"));
         let show_island = !safe && (settings.island || args.iter().any(|arg| arg == "--island"));
-        let hotkey = Hotkey::bind(hwnd, settings.shortcut, settings.win_space_override);
+        let hotkey = Hotkey::bind(
+            hwnd,
+            settings.shortcut,
+            settings.win_space_override,
+            settings.workspace_shortcuts,
+        );
         let order_path = config_path.with_file_name("dock-order.toml");
         let pins = if show_dock && !settings.dock_pins.is_empty() {
             let apps = (*state_ptr)
@@ -530,6 +535,21 @@ unsafe fn run_window(
                 continue;
             }
             if center.as_ref().is_some_and(|panel| panel.handle_key(&msg)) {
+                continue;
+            }
+            if msg.hwnd == hwnd
+                && msg.message == WM_HOTKEY
+                && msg.wParam == hotkey::MISSION_ID as usize
+            {
+                // Win+Tab toggles Mission Control; the hotkey grants foreground rights.
+                match &mission {
+                    Some(overview) if overview.handle() == GetForegroundWindow() => {
+                        PostMessageW(overview.handle(), WM_CLOSE, 0, 0);
+                    }
+                    _ => {
+                        PostMessageW(hwnd, mission::OPEN, 0, 0);
+                    }
+                }
                 continue;
             }
             if msg.hwnd == hwnd && msg.message == WM_HOTKEY && msg.wParam == hotkey::ID as usize {

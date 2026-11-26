@@ -1,4 +1,7 @@
-param([string]$Binary = (Join-Path $PSScriptRoot '../target/release/monolith.exe'))
+param(
+    [string]$Binary = (Join-Path $PSScriptRoot '../target/release/monolith.exe'),
+    [switch]$Shortcuts
+)
 
 $ErrorActionPreference = 'Stop'
 $application = Resolve-Path -LiteralPath $Binary
@@ -135,6 +138,45 @@ try {
         throw 'Next desktop wrapped beyond the last native desktop.'
     }
     'Mission Control switched between verified adjacent native desktops and stopped at the right boundary.'
+    if ($Shortcuts) {
+        $configRoot = Join-Path ([IO.Path]::GetTempPath()) ('monolith-workspaces-' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path (Join-Path $configRoot 'Monolith') -Force | Out-Null
+        @('workspace_shortcuts = true') | Set-Content -Encoding ASCII (Join-Path $configRoot 'Monolith/config.toml')
+        $oldLocal = $env:LOCALAPPDATA
+        $env:LOCALAPPDATA = $configRoot
+        try {
+            $script:launcher = Start-Process -FilePath $application -ArgumentList '--resident' -PassThru
+            Wait-Until { [DesktopSmoke]::FindClass('MonolithSpotlight') -ne [IntPtr]::Zero } 'The resident process did not start.'
+            $order = [byte[]](Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\VirtualDesktops').VirtualDesktopIDs
+            $ids = for ($i = 0; $i -lt $order.Length; $i += 16) { [Guid][byte[]]$order[$i..($i + 15)] }
+            $markers = @(@($origin, $originId), @($left, $leftId), @($right, $rightId))
+            foreach ($pick in @(0, 2, 1)) {
+                $digit = [Array]::IndexOf($ids, $markers[$pick][1]) + 1
+                if ($digit -lt 1 -or $digit -gt 9) { throw 'A fixture desktop is outside Win+1 to Win+9.' }
+                if (![DesktopSmoke]::PressChord([uint16[]]@(0x5B), (0x30 + $digit), $false)) { throw "Could not send Win+$digit." }
+                Wait-Until { [WorkspaceSmoke]::IsCurrent($markers[$pick][0].Handle, $markers[$pick][1]) } "Win+$digit did not select its native desktop."
+            }
+            if ($ids.Count -lt 9) {
+                if (![DesktopSmoke]::PressChord([uint16[]]@(0x5B), 0x39, $false)) { throw 'Could not send Win+9.' }
+                Start-Sleep -Milliseconds 400
+                if (![WorkspaceSmoke]::IsCurrent($left.Handle, $leftId)) { throw 'Win+9 moved away from the current desktop without a ninth desktop.' }
+            }
+            if (![DesktopSmoke]::PressChord([uint16[]]@(0x5B), 0x09, $false)) { throw 'Could not send Win+Tab.' }
+            Wait-Until {
+                $panel = Find-Mission $script:launcher
+                $panel -ne [IntPtr]::Zero -and [DesktopSmoke]::GetForegroundWindow() -eq $panel
+            } 'Win+Tab did not open Mission Control in the foreground.'
+            if (![DesktopSmoke]::PressChord([uint16[]]@(0x5B), 0x09, $false)) { throw 'Could not send the second Win+Tab.' }
+            Wait-Until { (Find-Mission $script:launcher) -eq [IntPtr]::Zero } 'A second Win+Tab did not close Mission Control.'
+            $spotlight = [DesktopSmoke]::FindClass('MonolithSpotlight')
+            [void][DesktopSmoke]::Post($spotlight, 0x10, [UIntPtr]::Zero, [IntPtr]::Zero)
+            Wait-Until { $script:launcher.HasExited } 'The resident process did not exit.'
+            'Win+1 to Win+9 selected verified native desktops by position, and Win+Tab toggled Mission Control.'
+        } finally {
+            $env:LOCALAPPDATA = $oldLocal
+            if ((Split-Path -Leaf $configRoot) -match '^monolith-workspaces-[0-9a-f]{32}$') { Remove-Item -LiteralPath $configRoot -Recurse -Force }
+        }
+    }
 } finally {
     if ($launcher -and !$launcher.HasExited) {
         $panel = Find-Mission $launcher

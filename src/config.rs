@@ -15,6 +15,8 @@ pub struct Config {
     pub shortcut: Shortcut,
     /// Experimental: bridge Win+Space to the registered fallback when Windows reserves it.
     pub win_space_override: bool,
+    /// Experimental: Win+1-9 select desktops and Win+Tab opens Mission Control.
+    pub workspace_shortcuts: bool,
     pub dock: bool,
     pub dock_pins: Vec<String>,
     pub dock_monitor: DockMonitor,

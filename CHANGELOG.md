@@ -35,4 +35,5 @@
 - Pinned Dock tiles adopt their running application windows and show running indicators.
 - Added an opt-in Win+Space bridge for Spotlight that keeps keys typed before activation.
 - Shift+click on a Dock pin starts another instance.
+- Added opt-in Win+1-9 workspace selection and Win+Tab Mission Control through the keyboard bridge.
 - Added an experimental Dock taskbar replacement mode with session-only visibility and native recovery.

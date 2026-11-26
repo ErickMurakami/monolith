@@ -1,13 +1,16 @@
-//! Opt-in Win+Space activation for Spotlight on builds where Windows reserves the chord.
+//! Opt-in Win+Space, Win+Tab and Win+1-9 for Monolith on builds where Windows
+//! reserves these chords.
 //!
-//! A low-level keyboard hook on a dedicated thread swallows Space while the logo key
-//! is held and pairs the logo key with a harmless marker so Start does not open. After
-//! the logo key is released, it sends the registered Ctrl+Alt+Space chord so Windows
-//! delivers a real `WM_HOTKEY` with foreground rights. Keys typed between the chord
+//! A low-level keyboard hook on a dedicated thread swallows the chord key while the
+//! logo key is held and pairs the logo key with a harmless marker so Start does not
+//! open. After the logo key is released, it sends a registered fallback chord so
+//! Windows delivers a real `WM_HOTKEY` with foreground rights, or switches desktops
+//! through the documented shortcuts for Win+1-9. Keys typed between the Spotlight chord
 //! and Spotlight taking focus are held in a small buffer and replayed as native input
 //! once Spotlight reports focus, so dead keys and modifiers keep their layout meaning.
 //! The buffer exists only during that window and is never stored or logged.
 
+use crate::workspaces;
 use std::{
     cell::RefCell,
     io,
@@ -23,7 +26,7 @@ use windows_sys::Win32::{
 };
 
 /// Tags Monolith's own synthetic input so the hook passes it through.
-const INJECTED: usize = 0x4d4f_4e4f;
+pub const INJECTED: usize = 0x4d4f_4e4f;
 // Give the system a harmless key to pair with the logo key instead of opening Start.
 const LOGO_MARKER: u16 = 0xff;
 const RELEASE: u32 = WM_APP + 1;
@@ -50,27 +53,51 @@ pub struct Modifiers {
     pub other: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Action {
+    Spotlight,
+    MissionControl,
+    /// Zero-based workspace index from Win+1 through Win+9.
+    Workspace(u8),
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum Decision {
     Pass,
     Swallow,
-    /// Swallow Space and begin an activation.
-    Trigger,
+    /// Swallow the key and run the action once the logo key is released.
+    Trigger(Action),
+}
+
+/// The chords this bridge may take over from Windows.
+#[derive(Clone, Copy, Default)]
+pub struct Chords {
+    pub spotlight: bool,
+    pub mission_control: bool,
+    pub workspaces: bool,
 }
 
 #[derive(Default)]
 pub struct Machine {
-    space_held: bool,
+    chords: Chords,
+    held: Option<u16>,
     capturing: bool,
-    awaiting_logo: bool,
+    pending: Option<Action>,
     buffer: Vec<Key>,
 }
 
 impl Machine {
+    pub fn new(chords: Chords) -> Self {
+        Self {
+            chords,
+            ..Self::default()
+        }
+    }
+
     pub fn on_key(&mut self, key: Key, modifiers: Modifiers) -> Decision {
-        if key.vk == VK_SPACE && self.space_held {
+        if self.held == Some(key.vk) {
             if key.up {
-                self.space_held = false;
+                self.held = None;
             }
             return Decision::Swallow;
         }
@@ -85,22 +112,31 @@ impl Machine {
             self.buffer.push(key);
             return Decision::Swallow;
         }
-        if key.vk == VK_SPACE && !key.up && modifiers.logo && !modifiers.other {
-            self.space_held = true;
-            self.capturing = true;
-            self.awaiting_logo = true;
-            return Decision::Trigger;
+        if key.up || !modifiers.logo || modifiers.other {
+            return Decision::Pass;
         }
-        Decision::Pass
+        let action = match key.vk {
+            VK_SPACE if self.chords.spotlight => Action::Spotlight,
+            VK_TAB if self.chords.mission_control => Action::MissionControl,
+            digit @ 0x31..=0x39 if self.chords.workspaces => {
+                Action::Workspace((digit - 0x31) as u8)
+            }
+            _ => return Decision::Pass,
+        };
+        // A later chord while the logo key stays down replaces an earlier selection.
+        self.held = Some(key.vk);
+        self.capturing = action == Action::Spotlight;
+        self.pending = Some(action);
+        Decision::Trigger(action)
     }
 
-    /// The bridge chord should be sent once, after the logo key is up.
-    pub fn take_logo_release(&mut self) -> bool {
-        std::mem::take(&mut self.awaiting_logo)
+    /// The action to run once, after the logo key is up.
+    pub fn take_pending(&mut self) -> Option<Action> {
+        self.pending.take()
     }
 
     pub fn awaiting_logo(&self) -> bool {
-        self.awaiting_logo
+        self.pending.is_some()
     }
 
     #[cfg(test)]
@@ -111,7 +147,7 @@ impl Machine {
     /// End the capture and return the keys to replay, in order.
     pub fn release(&mut self) -> Vec<Key> {
         self.capturing = false;
-        self.awaiting_logo = false;
+        self.pending = None;
         std::mem::take(&mut self.buffer)
     }
 }
@@ -127,11 +163,14 @@ pub struct SpaceBridge {
 }
 
 impl SpaceBridge {
-    pub fn start() -> io::Result<Self> {
+    pub fn start(chords: Chords) -> io::Result<Self> {
         let (ready, started) = mpsc::channel();
         let worker = thread::Builder::new()
-            .name("monolith-space-bridge".into())
-            .spawn(move || unsafe { run(ready) })?;
+            .name("monolith-shortcut-bridge".into())
+            .spawn(move || unsafe {
+                MACHINE.set(Machine::new(chords));
+                run(ready)
+            })?;
         match started.recv() {
             Ok(Ok(thread_id)) => Ok(Self {
                 thread_id,
@@ -192,10 +231,10 @@ unsafe fn run(ready: mpsc::Sender<io::Result<u32>>) {
                     }
                 }
                 LOGO_UP if logo_timer != 0 => {
-                    try_send_chord(&mut logo_timer, &mut logo_waited);
+                    try_run_action(&mut logo_timer, &mut logo_waited);
                 }
                 WM_TIMER if msg.wParam == logo_timer && logo_timer != 0 => {
-                    try_send_chord(&mut logo_timer, &mut logo_waited);
+                    try_run_action(&mut logo_timer, &mut logo_waited);
                     if logo_timer != 0 && logo_waited >= LOGO_LIMIT_MS {
                         KillTimer(null_mut(), logo_timer);
                         logo_timer = 0;
@@ -235,7 +274,7 @@ unsafe fn finish(capture_timer: &mut usize) {
     }
 }
 
-unsafe fn try_send_chord(timer: &mut usize, waited: &mut u32) {
+unsafe fn try_run_action(timer: &mut usize, waited: &mut u32) {
     unsafe {
         *waited += POLL_MS;
         if pressed(VK_LWIN) || pressed(VK_RWIN) {
@@ -243,19 +282,20 @@ unsafe fn try_send_chord(timer: &mut usize, waited: &mut u32) {
         }
         KillTimer(null_mut(), *timer);
         *timer = 0;
-        if !MACHINE.with_borrow_mut(Machine::take_logo_release) {
+        let Some(action) = MACHINE.with_borrow_mut(Machine::take_pending) else {
             return;
-        }
-        // Windows owns the registered chord and delivers WM_HOTKEY with activation rights.
-        let chord = [
-            input(VK_LCONTROL, 0, 0),
-            input(VK_LMENU, 0, 0),
-            input(VK_SPACE, 0, 0),
-            input(VK_SPACE, 0, KEYEVENTF_KEYUP),
-            input(VK_LMENU, 0, KEYEVENTF_KEYUP),
-            input(VK_LCONTROL, 0, KEYEVENTF_KEYUP),
-        ];
-        if !send(&chord) {
+        };
+        // Windows owns the registered fallback chords and delivers WM_HOTKEY with
+        // activation rights. Desktop switching needs no foreground change.
+        let sent = match action {
+            Action::Spotlight => workspaces::press(&[VK_LCONTROL, VK_LMENU, VK_SPACE], 1),
+            Action::MissionControl => workspaces::press(&[VK_LCONTROL, VK_LMENU, VK_F24], 1),
+            Action::Workspace(index) => {
+                workspaces::switch_to(usize::from(index));
+                true
+            }
+        };
+        if !sent {
             replay(&MACHINE.with_borrow_mut(Machine::release));
         }
     }
@@ -341,7 +381,7 @@ unsafe extern "system" fn capture(code: i32, wp: WPARAM, lp: LPARAM) -> LRESULT 
                 match decision {
                     Decision::Pass => {}
                     Decision::Swallow => return 1,
-                    Decision::Trigger => {
+                    Decision::Trigger(_) => {
                         PostThreadMessageW(THREAD.get(), BEGIN, 0, 0);
                         send(&[
                             input(LOGO_MARKER, 0, 0),
@@ -373,6 +413,11 @@ mod tests {
         logo: true,
         other: false,
     };
+    const ALL: Chords = Chords {
+        spotlight: true,
+        mission_control: true,
+        workspaces: true,
+    };
     const NONE: Modifiers = Modifiers {
         logo: false,
         other: false,
@@ -380,19 +425,19 @@ mod tests {
 
     #[test]
     fn buffers_keys_typed_before_spotlight_has_focus() {
-        let mut machine = Machine::default();
+        let mut machine = Machine::new(ALL);
         assert_eq!(machine.on_key(key(VK_LWIN, false), NONE), Decision::Pass);
         assert_eq!(
             machine.on_key(key(VK_SPACE, false), LOGO),
-            Decision::Trigger
+            Decision::Trigger(Action::Spotlight)
         );
         assert_eq!(
             machine.on_key(key(VK_SPACE, false), LOGO),
             Decision::Swallow
         );
         assert_eq!(machine.on_key(key(VK_LWIN, true), LOGO), Decision::Pass);
-        assert!(machine.take_logo_release());
-        assert!(!machine.take_logo_release());
+        assert_eq!(machine.take_pending(), Some(Action::Spotlight));
+        assert_eq!(machine.take_pending(), None);
         let typed = [key(0x43, false), key(VK_SPACE, true), key(0x43, true)];
         for event in typed {
             assert_eq!(machine.on_key(event, NONE), Decision::Swallow);
@@ -405,7 +450,7 @@ mod tests {
 
     #[test]
     fn ignores_space_without_the_logo_key_or_with_other_modifiers() {
-        let mut machine = Machine::default();
+        let mut machine = Machine::new(ALL);
         assert_eq!(machine.on_key(key(VK_SPACE, false), NONE), Decision::Pass);
         let shifted = Modifiers {
             logo: true,
@@ -420,12 +465,51 @@ mod tests {
 
     #[test]
     fn passes_input_once_the_buffer_is_full() {
-        let mut machine = Machine::default();
+        let mut machine = Machine::new(ALL);
         machine.on_key(key(VK_SPACE, false), LOGO);
         for _ in 0..BUFFER_LIMIT {
             assert_eq!(machine.on_key(key(0x41, false), NONE), Decision::Swallow);
         }
         assert_eq!(machine.on_key(key(0x41, false), NONE), Decision::Pass);
         assert_eq!(machine.release().len(), BUFFER_LIMIT);
+    }
+
+    #[test]
+    fn selects_workspaces_and_mission_control_without_buffering() {
+        let mut machine = Machine::new(ALL);
+        assert_eq!(
+            machine.on_key(key(0x32, false), LOGO),
+            Decision::Trigger(Action::Workspace(1))
+        );
+        // A second digit while the logo key is held replaces the selection.
+        assert_eq!(machine.on_key(key(0x32, true), LOGO), Decision::Swallow);
+        assert_eq!(
+            machine.on_key(key(0x34, false), LOGO),
+            Decision::Trigger(Action::Workspace(3))
+        );
+        assert_eq!(machine.on_key(key(0x34, true), LOGO), Decision::Swallow);
+        assert_eq!(machine.on_key(key(0x41, false), NONE), Decision::Pass);
+        assert_eq!(machine.take_pending(), Some(Action::Workspace(3)));
+        assert_eq!(
+            machine.on_key(key(VK_TAB, false), LOGO),
+            Decision::Trigger(Action::MissionControl)
+        );
+        assert!(machine.release().is_empty());
+    }
+
+    #[test]
+    fn leaves_disabled_and_modified_chords_to_windows() {
+        let mut machine = Machine::new(Chords {
+            spotlight: true,
+            ..Chords::default()
+        });
+        assert_eq!(machine.on_key(key(0x31, false), LOGO), Decision::Pass);
+        assert_eq!(machine.on_key(key(VK_TAB, false), LOGO), Decision::Pass);
+        let shifted = Modifiers {
+            logo: true,
+            other: true,
+        };
+        let mut all = Machine::new(ALL);
+        assert_eq!(all.on_key(key(0x31, false), shifted), Decision::Pass);
     }
 }
