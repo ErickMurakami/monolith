@@ -23,6 +23,8 @@ mod file_git;
 #[cfg(windows)]
 mod file_launch;
 #[cfg(windows)]
+mod file_recycle;
+#[cfg(windows)]
 mod file_transfer;
 #[cfg(windows)]
 mod files;

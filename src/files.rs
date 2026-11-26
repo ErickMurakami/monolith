@@ -5,6 +5,7 @@ use crate::{
     file_clipboard::{self, MAX_PATHS},
     file_git::{self, Branch, ItemStatus},
     file_launch::{self, Tool},
+    file_recycle::{self, RecycleOutcome},
     file_transfer::{self, TransferOutcome},
     files_directory::{self, Listing, Move, Navigation, Reader},
     overlay::{self, Palette},
@@ -115,11 +116,13 @@ struct ClipboardJob {
 enum ClipboardWork {
     Publish(Vec<PathBuf>, bool),
     Paste(PathBuf),
+    Recycle(Vec<PathBuf>),
 }
 
 enum ClipboardOutcome {
     Copied(bool),
     Pasted(TransferOutcome),
+    Recycled(RecycleOutcome),
 }
 
 impl State {
@@ -475,6 +478,10 @@ unsafe fn key(hwnd: HWND, state: *mut State, message: &MSG) -> bool {
                 copy_selection(hwnd, state, None, vk == VK_X)
             }
             VK_V if ctrl && message.hwnd == list => paste_selection(hwnd, state),
+            // Shift+Delete is permanent deletion in Explorer; Files offers recycling only.
+            VK_DELETE if message.hwnd == list && GetKeyState(i32::from(VK_SHIFT)) >= 0 => {
+                recycle_selection(hwnd, state, None)
+            }
             VK_F5 => refresh(hwnd, state),
             VK_RETURN if message.hwnd == edit => {
                 let length = GetWindowTextLengthW(edit);
@@ -1146,6 +1153,11 @@ unsafe fn list_menu(hwnd: HWND, state: *mut State, origin: HWND, lp: LPARAM) {
             (7, (*state).label("Copy", "Copiar"), item_state),
             (8, (*state).label("Cut", "Recortar"), item_state),
             (9, (*state).label("Paste", "Colar"), folder_state),
+            (
+                10,
+                (*state).label("Move to Recycle Bin", "Mover para a Lixeira"),
+                item_state,
+            ),
         ] {
             AppendMenuW(menu, MF_STRING | flags, id, wide(label).as_ptr());
         }
@@ -1180,6 +1192,7 @@ unsafe fn list_menu(hwnd: HWND, state: *mut State, origin: HWND, lp: LPARAM) {
             }
             7 | 8 => copy_selection(hwnd, state, Some(row), selected == 8),
             9 => paste_selection(hwnd, state),
+            10 => recycle_selection(hwnd, state, Some(row)),
             _ => {}
         }
     }
@@ -1223,9 +1236,28 @@ unsafe fn launch_error(hwnd: HWND, state: *mut State, error: &io::Error) {
 
 unsafe fn copy_selection(hwnd: HWND, state: *mut State, clicked: Option<i32>, cut: bool) {
     unsafe {
-        let Some(folder) = (*state).navigation.current() else {
-            return;
-        };
+        if let Some(paths) = selected_paths(hwnd, state, clicked) {
+            start_clipboard(hwnd, state, ClipboardWork::Publish(paths, cut));
+        }
+    }
+}
+
+unsafe fn recycle_selection(hwnd: HWND, state: *mut State, clicked: Option<i32>) {
+    unsafe {
+        if let Some(paths) = selected_paths(hwnd, state, clicked) {
+            start_clipboard(hwnd, state, ClipboardWork::Recycle(paths));
+        }
+    }
+}
+
+/// The clicked row when it lies outside the selection, otherwise the selection.
+unsafe fn selected_paths(
+    hwnd: HWND,
+    state: *mut State,
+    clicked: Option<i32>,
+) -> Option<Vec<PathBuf>> {
+    unsafe {
+        let folder = (*state).navigation.current()?;
         let list = GetDlgItem(hwnd, LIST as i32);
         let entries = &(*state).listing.entries;
         let mut paths = Vec::new();
@@ -1252,19 +1284,14 @@ unsafe fn copy_selection(hwnd: HWND, state: *mut State, clicked: Option<i32>, cu
                     set_text(
                         hwnd,
                         STATUS,
-                        (*state).label(
-                            "Selection is too large for the clipboard",
-                            "A seleção é grande demais para a área de transferência",
-                        ),
+                        (*state).label("The selection is too large", "A seleção é grande demais"),
                     );
-                    return;
+                    return None;
                 }
                 paths.push(folder.join(&entry.name));
             }
         }
-        if !paths.is_empty() {
-            start_clipboard(hwnd, state, ClipboardWork::Publish(paths, cut));
-        }
+        (!paths.is_empty()).then_some(paths)
     }
 }
 
@@ -1307,6 +1334,9 @@ fn clipboard_work(
             }
             Ok(ClipboardOutcome::Pasted(outcome))
         }
+        ClipboardWork::Recycle(paths) => {
+            file_recycle::perform(&paths, &cancel).map(ClipboardOutcome::Recycled)
+        }
     }
 }
 
@@ -1318,7 +1348,9 @@ unsafe fn start_clipboard(hwnd: HWND, state: *mut State, work: ClipboardWork) {
         {
             return;
         }
-        let pasted = matches!(&work, ClipboardWork::Paste(_));
+        let recycling = matches!(&work, ClipboardWork::Recycle(_));
+        // Both change the displayed folder, so the listing refreshes afterwards.
+        let pasted = recycling || matches!(&work, ClipboardWork::Paste(_));
         let target = hwnd as usize;
         let (sender, result) = mpsc::channel();
         let cancel = Arc::new(AtomicBool::new(false));
@@ -1340,7 +1372,16 @@ unsafe fn start_clipboard(hwnd: HWND, state: *mut State, work: ClipboardWork) {
                     cancel,
                     close_after: false,
                 });
-                if pasted {
+                if recycling {
+                    set_text(
+                        hwnd,
+                        STATUS,
+                        (*state).label(
+                            "Moving to the Recycle Bin… Escape cancels",
+                            "Movendo para a Lixeira… Escape cancela",
+                        ),
+                    );
+                } else if pasted {
                     set_text(
                         hwnd,
                         STATUS,
@@ -1416,11 +1457,24 @@ unsafe fn finish_clipboard(hwnd: HWND, state: *mut State, pasted: bool) {
                     "Transferência interrompida. Verifique a origem e o destino.",
                 )
                 .to_owned(),
+            Ok(ClipboardOutcome::Recycled(RecycleOutcome { error: None, .. })) => (*state)
+                .label("Moved to the Recycle Bin", "Movido para a Lixeira")
+                .to_owned(),
+            Ok(ClipboardOutcome::Recycled(RecycleOutcome {
+                recycled,
+                error: Some(error),
+            })) => format!(
+                "{recycled} {} · {error}",
+                (*state).label(
+                    "moved to the Recycle Bin before stopping",
+                    "movidos para a Lixeira antes da interrupção"
+                )
+            ),
             Err(error) => format!(
                 "{} · {error}",
                 (*state).label(
-                    "Could not transfer files",
-                    "Não foi possível transferir os arquivos"
+                    "Could not complete the file operation",
+                    "Não foi possível concluir a operação de arquivos"
                 )
             ),
         };

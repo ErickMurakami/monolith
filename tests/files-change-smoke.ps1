@@ -93,7 +93,21 @@ try {
     $directoryName = 'M' + [char]0xFA + 'sica'
     Submit-Name $directoryName
     Wait-Until { [IO.Directory]::Exists((Join-Path $folder $directoryName)) -and (Read-Label $status) -eq '3 items' } 'The folder was not created and displayed.'
-    'Files native rename, conflict preservation, case-only and Unicode names, folder creation and cancellation passed.'
+
+    $entries = @([IO.Directory]::GetFileSystemEntries($folder))
+    Press-Key 0x24
+    Press-Key 0x2E
+    Wait-Until { (Read-Label $status) -eq 'Moved to the Recycle Bin' } 'Delete did not report recycling the focused item.'
+    $recycled = @($entries | Where-Object { !(Test-Path -LiteralPath $_) })
+    if ($recycled.Count -ne 1) { throw 'Delete did not recycle exactly the focused item.' }
+    $bin = (New-Object -ComObject Shell.Application).Namespace(10)
+    $binItem = $bin.Items() | Where-Object {
+        $bin.GetDetailsOf($_, 1) -eq $folder -and $_.Name -eq [IO.Path]::GetFileName($recycled[0])
+    } | Select-Object -First 1
+    if (!$binItem) { throw 'The recycled item is not in the Recycle Bin.' }
+    $binItem.InvokeVerb('undelete')
+    Wait-Until { Test-Path -LiteralPath $recycled[0] } 'The recycled item could not be restored from the Recycle Bin.'
+    'Files native rename, conflict preservation, case-only and Unicode names, folder creation, cancellation and recycling passed.'
 } finally {
     if ($launcher -and !$launcher.HasExited) {
         $window = [DesktopSmoke]::FindVisibleForProcess('MonolithFiles', [uint32]$launcher.Id)

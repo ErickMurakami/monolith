@@ -391,8 +391,16 @@ mod tests {
                     FOF_SILENT | FOF_NOERRORUI | FOFX_EARLYFAILURE | FOF_RENAMEONCOLLISION,
                 )
                 .unwrap();
+            // The bin item is stored under an internal $R name; restore the original one.
+            let name: Vec<u16> = fixture
+                .file
+                .file_name()
+                .unwrap()
+                .encode_wide()
+                .chain([0])
+                .collect();
             restore
-                .MoveItem(&recycled, &parent, PCWSTR::null(), None)
+                .MoveItem(&recycled, &parent, PCWSTR(name.as_ptr()), None)
                 .unwrap();
             let result = restore.PerformOperations();
             assert!(!restore.GetAnyOperationsAborted().unwrap().as_bool());

@@ -27,6 +27,7 @@ Foundation and the first native application are implemented. Desktop Experience 
 - `src/file_git.rs` provides opt-in branch, locally known upstream and file status through a bounded, read-only Git worker.
 - `src/file_launch.rs` opens the terminal in the displayed directory and passes a selected project to the configured IDE.
 - `src/file_clipboard.rs` and `src/file_transfer.rs` implement on-demand native Files copy, cut and paste with Shell clipboard interchange, collision-safe naming and cancellation requests.
+- `src/file_recycle.rs` recycles the selection on Delete or from the context menu through the Shell transfer source. It never falls back to permanent deletion.
 - `benchmarks/measure.ps1` samples Windows and Monolith memory, CPU and I/O.
 - The benchmark also records the busiest GPU engine from WDDM counters when available.
 - `docs/spotlight.png` shows a calculation in the running borderless Spotlight release build.
@@ -69,6 +70,8 @@ On Windows 11 26H2 build 26300.9974, `tests/files-change-smoke.ps1` verified the
 
 `tests/files-transfer-smoke.ps1` verified a Unicode clipboard file list, copy with an existing destination, recovery from a rejected same-folder move, a successful cut and paste, and paste from an external Shell clipboard producer. Native tests covered nested directory collisions, a locked item and cancellation before writing. Formatting, strict Clippy, 33 tests, a locked release build and the existing Files rename and launch smoke tests passed. Mid-transfer cancellation through the native progress dialog, moves across volumes, and live WSL or UNC transfers remain open.
 
+On build 26300.9974, recycling from the running release build was verified with key messages posted to the Files list: Delete recycled only the focused Unicode-named item in 99 ms, the item appeared in the Windows Recycle Bin under its original folder, and the Shell `undelete` verb restored its contents. The native `file_recycle` test, ignored by default, recycled and restored a unique fixture through the returned Shell item. Formatting, strict Clippy, 35 unit tests and the locked release build passed. The keystroke-driven `files-change-smoke.ps1` gained the same recycling step but was not run end to end: another application held the foreground, and the test is not run unattended while the desktop is in use. Network, WSL and removable volumes are rejected before any Shell call. Live rejection from a full or disabled Recycle Bin remains untested.
+
 Checked the declared licences of all locked dependencies, including the added Windows Runtime bindings. Cargo Audit passed with warnings denied across 31 lockfile entries.
 
 ## Measurements
@@ -103,4 +106,4 @@ Ctrl+Alt+Space remains the temporary binding on build 26300.9974. The isolated W
 
 ## Next task
 
-Make pinned Dock tiles adopt verified running application groups and preserve interaction when switching native workspaces. Continue combined Win+Space first-key delivery, stable workspace identity, dedicated application placement and physical gesture validation. Complete Files deletion and recovery independently.
+Make pinned Dock tiles adopt verified running application groups and preserve interaction when switching native workspaces. Continue combined Win+Space first-key delivery, stable workspace identity, dedicated application placement and physical gesture validation. Files recycling is complete; remaining Files work covers mid-transfer cancellation, cross-volume moves and live WSL or UNC transfers.
