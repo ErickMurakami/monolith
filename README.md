@@ -41,7 +41,7 @@ Select **Show Git** or press Ctrl+G to see the current branch, locally known ups
 
 Use **Open terminal here** in the Files context menu to start a terminal in the displayed directory. Monolith uses Windows Terminal when its alias is available and uses Windows PowerShell as the fallback. Set `files_ide` to the absolute path of a local IDE executable to show **Open in configured IDE**. It opens the selected folder, or the displayed directory when a folder is unavailable in the selection.
 
-Monolith tries Win+Space first and uses Ctrl+Alt+Space as a temporary fallback when Windows reserves the preferred chord. With `--resident`, pressing the registered shortcut again dismisses Spotlight. Escape returns focus to the previous window when Windows permits it. Safe mode disables global shortcuts.
+Monolith tries Win+Space first and uses Ctrl+Alt+Space as a fallback when Windows reserves the preferred chord. Set `win_space_override = true` (experimental) to keep Win+Space working anyway: a keyboard hook on its own thread sends the registered fallback chord when you press Win+Space and replays anything typed before Spotlight has focus, so the first characters are not lost. The hook is removed when Monolith exits, and Win+Space returns to Windows (input language switching). With `--resident`, pressing the registered shortcut again dismisses Spotlight. Escape returns focus to the previous window when Windows permits it. Safe mode disables global shortcuts.
 
 Monolith reads `%LOCALAPPDATA%\Monolith\config.toml` at startup.
 
@@ -50,6 +50,7 @@ theme = "dark"              # dark, light
 language = "english"        # english, portuguese
 # files_ide = 'C:\Tools\IDE.exe'
 shortcut = "ctrl-alt-space" # win-space, ctrl-alt-space, disabled
+# win_space_override = true # experimental Win+Space bridge when Windows reserves the chord
 dock = false               # set true to opt in
 dock_pins = ["Visual Studio Code"] # exact Start menu shortcut names, in display order
 dock_monitor = "primary"           # primary, active
@@ -59,7 +60,7 @@ top_bar = false            # set true to opt in
 island = false             # set true to opt in
 ```
 
-Pins are resolved from local Start menu shortcuts. Missing and repeated names are skipped. Pins take the first available slots in the Dock. Drag a pin onto another pin to reorder it. The order is saved in `dock-order.toml` next to the configuration and takes precedence over the list. Remove the order file to restore configuration order. Windows Shell icons are monochrome by default, with names available through native tooltips and accessibility. A tile uses its text label when the Shell cannot supply an icon. A pin whose shortcut directly targets an executable adopts that application's running windows: clicking it switches to, minimises or chooses among them instead of starting another instance, and a small blue indicator marks it as running. Launcher stubs, packaged apps and shortcuts to documents keep their pin as a launcher beside a separate running tile.
+Pins are resolved from local Start menu shortcuts. Missing and repeated names are skipped. Pins take the first available slots in the Dock. Drag a pin onto another pin to reorder it. The order is saved in `dock-order.toml` next to the configuration and takes precedence over the list. Remove the order file to restore configuration order. Windows Shell icons are monochrome by default, with names available through native tooltips and accessibility. A tile uses its text label when the Shell cannot supply an icon. A pin whose shortcut directly targets an executable adopts that application's running windows: clicking it switches to, minimises or chooses among them instead of starting another instance, and a small blue indicator marks it as running. Launcher stubs, packaged apps and shortcuts to documents keep their pin as a launcher beside a separate running tile. Shift+click a pin to start another instance.
 
 Invalid settings are preserved on disk and defaults are loaded. Rename the file to restore defaults on the next start.
 

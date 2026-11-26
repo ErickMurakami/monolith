@@ -7,6 +7,7 @@ param(
     [switch]$AutoHide,
     [switch]$Hotkey,
     [switch]$Combined,
+    [switch]$WinSpace,
     [switch]$Preview,
     [switch]$HelpersOnly,
     [string]$Capture
@@ -345,6 +346,11 @@ function Invoke-HotkeySmoke($Application) {
         $env:LOCALAPPDATA = $configRoot
         # If Windows allows Win+Space, occupy it temporarily to exercise the real fallback.
         $reserved = [DesktopSmoke]::RegisterHotKey([IntPtr]::Zero, 810, 0x4008, 0x20)
+        if ($WinSpace) {
+            New-Item -ItemType Directory -Path (Join-Path $configRoot 'Monolith') -Force | Out-Null
+            @('shortcut = "win-space"', 'win_space_override = true') |
+                Set-Content -Encoding ASCII (Join-Path $configRoot 'Monolith/config.toml')
+        }
         $fixture.Text = 'Global shortcut verification'
         $fixture.Show()
         Focus-Fixture $fixture
@@ -363,7 +369,7 @@ function Invoke-HotkeySmoke($Application) {
                 Wait-Until { [DesktopSmoke]::FindVisibleForProcess($surface, [uint32]$launcher.Id) -ne [IntPtr]::Zero } "Combined startup did not show $surface."
             }
         }
-        $alternate = [uint16[]]@(0xA2,0xA4)
+        $alternate = if ($WinSpace) { [uint16[]]@(0x5B) } else { [uint16[]]@(0xA2,0xA4) }
         $digit = 1
         foreach ($state in 'normal','maximised','minimised','fullscreen') {
             $target = $fixture
@@ -380,11 +386,16 @@ function Invoke-HotkeySmoke($Application) {
                 $fixture.Bounds = [Windows.Forms.Screen]::PrimaryScreen.Bounds
             }
             Focus-Fixture $target
-            if (![DesktopSmoke]::PressChord($alternate, 0x20, $true)) { throw "Could not send the shortcut in $state." }
+            if (![DesktopSmoke]::PressChord($alternate, 0x20, !$WinSpace)) { throw "Could not send the shortcut in $state." }
+            if ($WinSpace) {
+                # Type before Spotlight can have focus: the bridge must hold and replay the key.
+                Start-Sleep -Milliseconds 15
+                if (![DesktopSmoke]::PressChord([uint16[]]@(), (0x30 + $digit), $false)) { throw 'Could not type after the shortcut.' }
+            }
             Wait-Until { [DesktopSmoke]::IsWindowVisible($window) } "The global shortcut did not show Spotlight in $state."
             Wait-Until { [DesktopSmoke]::GetForegroundWindow() -eq $window } "Spotlight opened without foreground focus in $state."
             $edit = [DesktopSmoke]::FindChild($window, 'Edit')
-            if (![DesktopSmoke]::PressChord([uint16[]]@(), (0x30 + $digit), $false)) { throw 'Could not type into the focused Spotlight.' }
+            if (!$WinSpace -and ![DesktopSmoke]::PressChord([uint16[]]@(), (0x30 + $digit), $false)) { throw 'Could not type into the focused Spotlight.' }
             Wait-Until {
                 $entry = New-Object Text.StringBuilder 32
                 [void][DesktopSmoke]::Read($edit, 0xD, [UIntPtr]::new([uint32]32), $entry)

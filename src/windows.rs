@@ -253,7 +253,7 @@ pub fn run() -> io::Result<()> {
             !safe && (settings.dock || replace_taskbar || args.iter().any(|arg| arg == "--dock"));
         let show_top_bar = !safe && (settings.top_bar || args.iter().any(|arg| arg == "--top-bar"));
         let show_island = !safe && (settings.island || args.iter().any(|arg| arg == "--island"));
-        let hotkey = Hotkey::bind(hwnd, settings.shortcut);
+        let hotkey = Hotkey::bind(hwnd, settings.shortcut, settings.win_space_override);
         let order_path = config_path.with_file_name("dock-order.toml");
         let pins = if show_dock && !settings.dock_pins.is_empty() {
             let apps = (*state_ptr)
@@ -538,6 +538,7 @@ unsafe fn run_window(
                 } else {
                     show(hwnd, state, dock.as_ref());
                 }
+                hotkey.handled();
                 continue;
             }
             if msg.message == WM_KEYDOWN && (msg.hwnd == edit || msg.hwnd == results) {

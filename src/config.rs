@@ -13,9 +13,8 @@ pub struct Config {
     pub language: Language,
     pub files_ide: Option<std::path::PathBuf>,
     pub shortcut: Shortcut,
-    // Accept configuration written during the short-lived override trial.
-    #[serde(rename = "win_space_override")]
-    _win_space_override: bool,
+    /// Experimental: bridge Win+Space to the registered fallback when Windows reserves it.
+    pub win_space_override: bool,
     pub dock: bool,
     pub dock_pins: Vec<String>,
     pub dock_monitor: DockMonitor,

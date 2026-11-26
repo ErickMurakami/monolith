@@ -102,10 +102,8 @@ The Windows CI checkpoint `4780b92` built and uploaded `monolith.exe`. Run `4582
 
 ## Shortcut compatibility
 
-Ctrl+Alt+Space remains the temporary binding on build 26300.9974. The isolated Win+Space bridge could activate Spotlight and left the fixture keyboard layout unchanged. Combined desktop trials lost the first character at a requested 15 ms interval even after assigning focus before refreshing results. The experimental binding from `b939a66` was withdrawn. The code and alternating-character regression test are preserved locally. Win+Space remains the target, with physical keyboard and elevated foreground validation pending.
-
-`tests/desktop-smoke.ps1 -Hotkey -Combined` passed with Dock, Top Bar and Island enabled. It verified direct typing through the native fallback, focus restoration, a clean restart and release of the registered chord after terminating the test process.
+With `win_space_override = true`, Win+Space opens Spotlight through `src/space_bridge.rs` on build 26300.9974, where direct registration returns error 1409. The earlier bridge lost the first character because its hook ran on the busy GUI thread and keys typed before activation reached the previous window. The new hook runs on a dedicated thread and replays buffered keys once Spotlight has focus. `tests/desktop-smoke.ps1 -Hotkey -WinSpace` passed in normal, maximised, minimised and fullscreen states, typing 15 ms after the chord. The `-Combined` variant with Dock, Top Bar and Island passed three of three runs, including a clean restart and shortcut recovery after forced termination. The Ctrl+Alt+Space test still passes. The bridge stays opt-in until a physical keyboard, dead-key layouts and an elevated foreground window have been tested.
 
 ## Next task
 
-Verify that Dock interaction is preserved when switching native workspaces, then Continue combined Win+Space first-key delivery, stable workspace identity, dedicated application placement and physical gesture validation. Files recycling is complete; remaining Files work covers mid-transfer cancellation, cross-volume moves and live WSL or UNC transfers.
+Verify that Dock interaction is preserved when switching native workspaces and validate the Win+Space bridge on the physical keyboard before enabling it by default. Continue with stable workspace identity, dedicated application placement and physical gesture validation. Files recycling is complete; remaining Files work covers mid-transfer cancellation, cross-volume moves and live WSL or UNC transfers.

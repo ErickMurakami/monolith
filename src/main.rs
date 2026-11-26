@@ -51,6 +51,8 @@ mod quick_look;
 #[cfg(any(windows, test))]
 mod search;
 #[cfg(windows)]
+mod space_bridge;
+#[cfg(windows)]
 mod taskbar;
 #[cfg(windows)]
 mod top_bar;

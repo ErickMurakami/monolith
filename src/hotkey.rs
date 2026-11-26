@@ -1,6 +1,6 @@
 //! Native global shortcut registration for Spotlight.
 
-use crate::config::Shortcut;
+use crate::{config::Shortcut, space_bridge::SpaceBridge};
 use std::io;
 use windows_sys::Win32::{
     Foundation::{ERROR_HOTKEY_ALREADY_REGISTERED, HWND},
@@ -19,14 +19,16 @@ pub enum Notice {
 pub struct Hotkey {
     window: HWND,
     registered: bool,
+    bridge: Option<SpaceBridge>,
     pub notice: Option<Notice>,
 }
 
 impl Hotkey {
-    pub fn bind(window: HWND, shortcut: Shortcut) -> Self {
+    pub fn bind(window: HWND, shortcut: Shortcut, win_space_bridge: bool) -> Self {
         let mut binding = Self {
             window,
             registered: false,
+            bridge: None,
             notice: None,
         };
         let preferred = match shortcut {
@@ -42,7 +44,12 @@ impl Hotkey {
                 match register(window, MOD_CONTROL | MOD_ALT) {
                     Ok(()) => {
                         binding.registered = true;
-                        binding.notice = Some(Notice::Alternate);
+                        if win_space_bridge {
+                            binding.bridge = SpaceBridge::start().ok();
+                        }
+                        if binding.bridge.is_none() {
+                            binding.notice = Some(Notice::Alternate);
+                        }
                     }
                     Err(error) => binding.notice = Some(Notice::Unavailable(error)),
                 }
@@ -55,10 +62,19 @@ impl Hotkey {
     pub fn available(&self) -> bool {
         self.registered
     }
+
+    /// Spotlight has handled the shortcut. Replay keys typed during a Win+Space bridge.
+    pub fn handled(&self) {
+        if let Some(bridge) = &self.bridge {
+            bridge.release();
+        }
+    }
 }
 
 impl Drop for Hotkey {
     fn drop(&mut self) {
+        // Remove the keyboard hook before releasing the chord it sends.
+        drop(self.bridge.take());
         if self.registered {
             unsafe { UnregisterHotKey(self.window, ID) };
         }

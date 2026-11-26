@@ -33,7 +33,8 @@ use windows_sys::Win32::{
         Controls::*,
         HiDpi::GetDpiForWindow,
         Input::KeyboardAndMouse::{
-            ReleaseCapture, SetCapture, TME_HOVER, TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent,
+            GetKeyState, ReleaseCapture, SetCapture, TME_HOVER, TME_LEAVE, TRACKMOUSEEVENT,
+            TrackMouseEvent, VK_SHIFT,
         },
         Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass},
         WindowsAndMessaging::*,
@@ -949,7 +950,11 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
                     }
                     FIRST_WINDOW.. => {
                         let index = (id - FIRST_WINDOW) as usize;
-                        if index < (*state).visible_pins && (&*state).live_group(id).is_none() {
+                        // Shift+click on a pin starts another instance, as on the Windows taskbar.
+                        let launch_new = GetKeyState(i32::from(VK_SHIFT)) < 0;
+                        if index < (*state).visible_pins
+                            && (launch_new || (&*state).live_group(id).is_none())
+                        {
                             let pins = &(*state).pins;
                             let path = pins[index].path.clone();
                             launch_shortcut(hwnd, &path);
