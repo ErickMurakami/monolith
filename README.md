@@ -31,12 +31,13 @@ Launch with `--files` or select **Files** from a shell context menu. Pass a fold
 
 Press Space on a file or folder in the list to open Quick Look. It shows common image formats, the first PDF page, UTF-8 or UTF-16 text and basic item details. Markdown and source files are displayed as literal text. Press Space or Escape to return to the list.
 
-Monolith tries Win+Space first. If Windows reports that chord is already registered, Monolith registers Ctrl+Alt+Space as its fallback and displays it in the search placeholder. With `--resident`, the registered shortcut opens Spotlight and a second press dismisses it. Escape returns focus to the previous window when Windows permits it. To change the binding, create `%LOCALAPPDATA%\Monolith\config.toml` and restart Monolith.
+Monolith tries Win+Space first and uses Ctrl+Alt+Space as its compatibility fallback when Windows reserves the preferred chord. To opt in to the Win+Space override on that system, set `win_space_override = true` in `%LOCALAPPDATA%\Monolith\config.toml` and restart Monolith. The override opens Spotlight when the Windows key is released. With `--resident`, pressing the shortcut again dismisses Spotlight. Escape returns focus to the previous window when Windows permits it. Safe mode disables both global bindings.
 
 ```toml
 theme = "dark"              # dark, light
 language = "english"        # english, portuguese
 shortcut = "ctrl-alt-space" # win-space, ctrl-alt-space, disabled
+win_space_override = false  # opt in with shortcut = "win-space"
 dock = false               # set true to opt in
 dock_pins = ["Visual Studio Code"] # exact Start menu shortcut names, in display order
 dock_monitor = "primary"           # primary, active

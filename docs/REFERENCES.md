@@ -92,6 +92,13 @@ Add a short entry only after meaningful investigation. Do not duplicate architec
 - Next step: <remaining blocker or implementation task>
 ```
 
+### Spotlight shortcut and foreground activation
+
+- The [Windhawk Keyboard Shortcut Actions mod](https://github.com/ramensoftware/windhawk-mods/blob/8265d3ad06d1ad81e736feadea2264f6b3fa4329/mods/keyboard-shortcut-actions.wh.cpp) uses native `RegisterHotKey` inside its taskbar host. The mod was reviewed by reference only.
+- [PowerToys Keyboard Manager](https://github.com/microsoft/PowerToys/blob/e3786cb5e287d90fc7c3685cc4887fea2c7d9a08/src/modules/keyboardmanager/KeyboardManagerEngineLibrary/KeyboardEventHandlers.cpp) uses a marker key to prevent a lone logo-key action while remapping. The project uses the MIT licence. Monolith implements its own narrower callback and retains [Windows foreground policy](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setforegroundwindow).
+- On Windows 11 26H2 build 26300.9974, a direct Win+Space registration and a Win+F24 bridge returned error 1409. Opening through a posted window message and simulating Alt did not transfer foreground. A bridge through the registered Ctrl+Alt+Space chord delivered a native hotkey message that could activate the overlay.
+- `tests/spotlight-override-smoke.ps1` exercised both Windows keys, repeat suppression, normal, maximised and fullscreen foreground windows, direct typing, restoration, safe mode and input-window observation. Physical keyboard and elevated-foreground testing remain pending.
+
 ### Directional workspace navigation
 
 - Windhawk's [Virtual Desktop Helper](https://github.com/ramensoftware/windhawk-mods/blob/9e30cde12c8838f10f8bca0cf40b5b213ec1ed54/mods/virtual-desktop-helper.wh.cpp) selects private COM vtables by Windows build. The mod was reviewed by reference only.

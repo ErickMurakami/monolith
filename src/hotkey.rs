@@ -1,9 +1,9 @@
 //! Native global shortcut registration for Spotlight.
 
-use crate::config::Shortcut;
+use crate::{config::Shortcut, hotkey_override::SpaceOverride};
 use std::io;
 use windows_sys::Win32::{
-    Foundation::{ERROR_HOTKEY_ALREADY_REGISTERED, HWND},
+    Foundation::{ERROR_HOTKEY_ALREADY_REGISTERED, HWND, WPARAM},
     UI::Input::KeyboardAndMouse::{
         MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, MOD_WIN, RegisterHotKey, UnregisterHotKey, VK_SPACE,
     },
@@ -19,14 +19,16 @@ pub enum Notice {
 pub struct Hotkey {
     window: HWND,
     registered: bool,
+    override_chord: Option<SpaceOverride>,
     pub notice: Option<Notice>,
 }
 
 impl Hotkey {
-    pub fn bind(window: HWND, shortcut: Shortcut) -> Self {
+    pub fn bind(window: HWND, shortcut: Shortcut, win_space_override: bool) -> Self {
         let mut binding = Self {
             window,
             registered: false,
+            override_chord: None,
             notice: None,
         };
         let preferred = match shortcut {
@@ -42,7 +44,12 @@ impl Hotkey {
                 match register(window, MOD_CONTROL | MOD_ALT) {
                     Ok(()) => {
                         binding.registered = true;
-                        binding.notice = Some(Notice::Alternate);
+                        if win_space_override {
+                            binding.override_chord = SpaceOverride::start(window);
+                        }
+                        if binding.override_chord.is_none() {
+                            binding.notice = Some(Notice::Alternate);
+                        }
                     }
                     Err(error) => binding.notice = Some(Notice::Unavailable(error)),
                 }
@@ -55,10 +62,17 @@ impl Hotkey {
     pub fn available(&self) -> bool {
         self.registered
     }
+
+    pub fn dispatch(&self, message: u32, param: WPARAM) -> bool {
+        self.override_chord
+            .as_ref()
+            .is_some_and(|hook| hook.dispatch(message, param))
+    }
 }
 
 impl Drop for Hotkey {
     fn drop(&mut self) {
+        drop(self.override_chord.take());
         if self.registered {
             unsafe { UnregisterHotKey(self.window, ID) };
         }

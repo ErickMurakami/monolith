@@ -7,6 +7,7 @@ Foundation and the first native application are implemented. Desktop Experience 
 - `src/windows.rs` owns the borderless Spotlight window lifecycle, keyboard navigation, focus dismissal and shortcut registration.
 - `src/overlay.rs` shares the native overlay styles, palette and DPI scaling between Spotlight and Dock.
 - `src/hotkey.rs` owns `RegisterHotKey` registration and switches to Ctrl+Alt+Space when Windows reserves Win+Space.
+- `src/hotkey_override.rs` supports an opt-in Win+Space override that activates Spotlight through the registered chord after logo-key release.
 - `src/search.rs` discovers Start menu desktop shortcuts and ranks local matches.
 - `src/calculator.rs` evaluates bounded arithmetic expressions entered in Spotlight.
 - `src/desktop.rs` discovers eligible windows and their display, detects fullscreen geometry and switches on explicit selection.
@@ -78,8 +79,8 @@ The Windows CI checkpoint `4780b92` built and uploaded `monolith.exe`. Run `4582
 
 ## Shortcut compatibility
 
-The current Windows build returned Win32 error 1409 on a direct Win+Space registration probe and accepted Ctrl+Alt+Space. An experimental low-level capture showed Spotlight but could not reliably give the search field foreground focus. The published runtime uses `RegisterHotKey` and leaves the reserved chord to Windows. A native desktop test with `-Hotkey` verifies the temporary fallback, suppression of key repeats, typing without a click, repeat-to-dismiss and restoration of focus. Live checks passed with the desktop shell, File Explorer, Helium, VS Code and IntelliJ IDEA.
+The temporary Ctrl+Alt+Space path still passes `-Hotkey`. With `win_space_override = true`, `tests/spotlight-override-smoke.ps1` passed twenty native trials on build 26300.9974. It exercised both Windows keys, normal, maximised and fullscreen windows in another process, first-key delivery after a requested 15 ms delay, repeat suppression, focus restoration, safe mode and an unchanged keyboard layout. The observer saw no top-level system input or Start window during the trials. Physical keyboard trials and elevated foreground behaviour remain unverified. The normal startup and safe-mode paths keep the override disabled by default.
 
 ## Next task
 
-Validate the isolated Win+Space activation bridge against the sprint requirements. Stable workspace identity, dedicated application placement, physical gestures and crash-safe taskbar restoration remain open. Continue independent native and developer-productivity work when a platform constraint blocks a P0 item.
+Validate combined resident execution with Win+Space enabled. Stable workspace identity, dedicated application placement, physical gestures and crash-safe taskbar restoration remain open. Wire the bounded read-only Git status backend into Files while those integrations are investigated.

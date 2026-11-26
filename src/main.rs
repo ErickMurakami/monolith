@@ -23,6 +23,8 @@ mod files_directory;
 #[cfg(windows)]
 mod hotkey;
 #[cfg(windows)]
+mod hotkey_override;
+#[cfg(windows)]
 mod icons;
 #[cfg(windows)]
 mod island;

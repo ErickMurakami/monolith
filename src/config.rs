@@ -12,6 +12,7 @@ pub struct Config {
     pub theme: Theme,
     pub language: Language,
     pub shortcut: Shortcut,
+    pub win_space_override: bool,
     pub dock: bool,
     pub dock_pins: Vec<String>,
     pub dock_monitor: DockMonitor,
