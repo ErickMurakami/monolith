@@ -7,12 +7,16 @@ use crate::{
     overlay::{self, Palette},
     preview::{self, Preview},
     search::App,
+    taskbar::{self, Lease, Placement},
     windows::{launch_shortcut, report_for, shell_menu, wide},
 };
 use std::{cell::Cell, ffi::c_void, io, mem::size_of, path::PathBuf, ptr::null_mut, rc::Rc};
 use windows_sys::Win32::{
     Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
     Graphics::Gdi::*,
+    System::RemoteDesktop::{
+        NOTIFY_FOR_THIS_SESSION, WTSRegisterSessionNotification, WTSUnRegisterSessionNotification,
+    },
     UI::{
         Accessibility::*,
         Controls::*,
@@ -50,6 +54,7 @@ pub struct Settings {
     pub monitor: DockMonitor,
     pub auto_hide: bool,
     pub original_icons: bool,
+    pub replace_taskbar: bool,
 }
 
 struct PinDrag {
@@ -79,6 +84,8 @@ struct State {
     preview: Option<(HWND, Preview)>,
     icons: Option<icons::Cache>,
     original_icons: bool,
+    request_taskbar: bool,
+    taskbar: Option<Lease>,
     tooltip: HWND,
     palette: Palette,
     portuguese: bool,
@@ -176,6 +183,8 @@ impl Dock {
                     preview: None,
                     icons: icons::Cache::new(handle).ok(),
                     original_icons: settings.original_icons,
+                    request_taskbar: settings.replace_taskbar,
+                    taskbar: None,
                     tooltip: null_mut(),
                     palette,
                     portuguese,
@@ -482,6 +491,7 @@ impl Drop for Dock {
         EVENT_TARGET.set(null_mut());
         REFRESH_PENDING.set(false);
         unsafe {
+            release_taskbar(self.handle, &raw mut *self.state);
             for hook in self.hooks.drain(..) {
                 UnhookWinEvent(hook);
             }
@@ -509,16 +519,24 @@ unsafe extern "system" fn window_event(
     if child != 0 || object != OBJID_WINDOW || window.is_null() {
         return;
     }
-    // Location events from other objects can be frequent while scrolling.
-    // Only the foreground window's geometry affects fullscreen suppression.
-    if event == EVENT_OBJECT_LOCATIONCHANGE && unsafe { GetForegroundWindow() } != window {
+    let handle = EVENT_TARGET.get();
+    if handle.is_null() {
         return;
     }
-    let handle = EVENT_TARGET.get();
-    if !handle.is_null() {
-        // Out-of-context events are delivered on the registering GUI thread.
-        schedule_refresh(handle);
+    // Geometry of the foreground window and leased tray affects Dock placement.
+    if event == EVENT_OBJECT_LOCATIONCHANGE && unsafe { GetForegroundWindow() } != window {
+        let state = unsafe { GetWindowLongPtrW(handle, GWLP_USERDATA) as *const State };
+        if state.is_null()
+            || !unsafe { &*state }
+                .taskbar
+                .as_ref()
+                .is_some_and(|lease| lease.is_tray(window))
+        {
+            return;
+        }
     }
+    // Out-of-context events are delivered on the registering GUI thread.
+    schedule_refresh(handle);
 }
 
 fn schedule_refresh(hwnd: HWND) {
@@ -560,9 +578,22 @@ unsafe fn refresh(hwnd: HWND, state: *mut State) {
     unsafe {
         drop((*state).preview.take());
         let Some((monitor, display)) = dock_display(state) else {
+            release_taskbar(hwnd, state);
             (*state).inventory = None;
             ShowWindow(hwnd, SW_HIDE);
             return;
+        };
+        let band = match (*state)
+            .taskbar
+            .as_ref()
+            .map(|lease| lease.placement(&display))
+        {
+            Some(Placement::Band(band)) => Some(band),
+            Some(Placement::Unavailable) => {
+                release_taskbar(hwnd, state);
+                None
+            }
+            Some(Placement::Pending) | None => None,
         };
         if desktop::foreground_covers_monitor(monitor, &display.rcMonitor) {
             ShowWindow(hwnd, SW_HIDE);
@@ -600,15 +631,20 @@ unsafe fn refresh(hwnd: HWND, state: *mut State) {
             let work = display.rcWork;
             let width = scale(120).min((work.right - work.left).max(1));
             let height = scale(3);
-            SetWindowPos(
+            let placed = SetWindowPos(
                 hwnd,
                 HWND_TOPMOST,
                 work.left + (work.right - work.left - width) / 2,
-                work.bottom - height,
+                band.map_or(work.bottom, |band| band.bottom) - height,
                 width,
                 height,
                 SWP_SHOWWINDOW | SWP_NOACTIVATE,
             );
+            if placed != 0 {
+                request_taskbar(hwnd, state, scale(37) + scale(6));
+            } else {
+                release_taskbar(hwnd, state);
+            }
             InvalidateRect(hwnd, std::ptr::null(), 1);
             return;
         }
@@ -657,7 +693,9 @@ unsafe fn refresh(hwnd: HWND, state: *mut State) {
         let height = scale(37);
         let left = work.left + ((work.right - work.left - width) / 2).max(0);
         let margin = if (*state).auto_hide { 0 } else { scale(8) };
-        let top = work.bottom - height - margin;
+        let top = band.map_or(work.bottom - height - margin, |band| {
+            band.top + (band.bottom - band.top - height) / 2
+        });
 
         let spotlight = if (*state).portuguese {
             "Buscar"
@@ -697,7 +735,7 @@ unsafe fn refresh(hwnd: HWND, state: *mut State) {
             );
             InvalidateRect(button, std::ptr::null(), 0);
         }
-        SetWindowPos(
+        let placed = SetWindowPos(
             hwnd,
             HWND_TOPMOST,
             left,
@@ -706,6 +744,34 @@ unsafe fn refresh(hwnd: HWND, state: *mut State) {
             height,
             SWP_SHOWWINDOW | SWP_NOACTIVATE,
         );
+        if placed != 0 {
+            request_taskbar(hwnd, state, height + scale(6));
+        } else {
+            release_taskbar(hwnd, state);
+        }
+    }
+}
+
+unsafe fn request_taskbar(hwnd: HWND, state: *mut State, minimum_height: i32) {
+    unsafe {
+        if !std::mem::take(&mut (*state).request_taskbar)
+            || WTSRegisterSessionNotification(hwnd, NOTIFY_FOR_THIS_SESSION) == 0
+        {
+            return;
+        }
+        (*state).taskbar = Lease::start(hwnd, minimum_height).ok().flatten();
+        if (*state).taskbar.is_none() {
+            WTSUnRegisterSessionNotification(hwnd);
+        }
+    }
+}
+
+unsafe fn release_taskbar(hwnd: HWND, state: *mut State) {
+    unsafe {
+        if let Some(lease) = (*state).taskbar.take() {
+            drop(lease);
+            WTSUnRegisterSessionNotification(hwnd);
+        }
     }
 }
 
@@ -897,7 +963,21 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
                 }
                 0
             }
-            WM_DISPLAYCHANGE | WM_SETTINGCHANGE | WM_DPICHANGED => {
+            WM_DISPLAYCHANGE | WM_DPICHANGED | WM_WTSSESSION_CHANGE => {
+                release_taskbar(hwnd, state);
+                schedule_refresh(hwnd);
+                0
+            }
+            WM_POWERBROADCAST if matches!(wp as u32, PBT_APMSUSPEND | PBT_APMRESUMEAUTOMATIC) => {
+                release_taskbar(hwnd, state);
+                schedule_refresh(hwnd);
+                1
+            }
+            WM_ENDSESSION if wp != 0 => {
+                release_taskbar(hwnd, state);
+                0
+            }
+            WM_SETTINGCHANGE | taskbar::CHANGED => {
                 schedule_refresh(hwnd);
                 0
             }

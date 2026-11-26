@@ -49,12 +49,20 @@ mod quick_look;
 #[cfg(any(windows, test))]
 mod search;
 #[cfg(windows)]
+mod taskbar;
+#[cfg(windows)]
 mod top_bar;
 #[cfg(windows)]
 mod windows;
 
 #[cfg(windows)]
 fn main() {
+    if std::env::args_os()
+        .nth(1)
+        .is_some_and(|arg| arg == taskbar::HELPER_ARGUMENT)
+    {
+        std::process::exit(if taskbar::run_helper().is_ok() { 0 } else { 1 });
+    }
     if let Err(error) = windows::run() {
         windows::report(&error.to_string());
         std::process::exit(1);

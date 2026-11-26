@@ -176,6 +176,9 @@ fn roots() -> impl Iterator<Item = PathBuf> {
 pub fn run() -> io::Result<()> {
     let args: Vec<_> = env::args_os().skip(1).collect();
     let safe = args.iter().any(|arg| arg == "--safe-mode");
+    if safe {
+        crate::taskbar::release_session();
+    }
     let resident = !safe && args.iter().any(|arg| arg == "--resident");
     let config_path = env::var_os("LOCALAPPDATA")
         .map(|base| PathBuf::from(base).join("Monolith").join("config.toml"))
@@ -245,7 +248,9 @@ pub fn run() -> io::Result<()> {
         // dispatch messages that can re-enter a state-reading branch.
         let state_ptr = Box::into_raw(state);
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, state_ptr as isize);
-        let show_dock = !safe && (settings.dock || args.iter().any(|arg| arg == "--dock"));
+        let replace_taskbar = !safe && args.iter().any(|arg| arg == "--replace-taskbar");
+        let show_dock =
+            !safe && (settings.dock || replace_taskbar || args.iter().any(|arg| arg == "--dock"));
         let show_top_bar = !safe && (settings.top_bar || args.iter().any(|arg| arg == "--top-bar"));
         let show_island = !safe && (settings.island || args.iter().any(|arg| arg == "--island"));
         let hotkey = Hotkey::bind(hwnd, settings.shortcut);
@@ -273,6 +278,7 @@ pub fn run() -> io::Result<()> {
                     monitor: settings.dock_monitor,
                     auto_hide: settings.dock_auto_hide,
                     original_icons: settings.dock_original_icons,
+                    replace_taskbar,
                 }),
                 top_bar: show_top_bar,
                 island: show_island,

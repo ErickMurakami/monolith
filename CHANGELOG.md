@@ -31,3 +31,4 @@
 - Added terminal and configured IDE actions to the Files context menu.
 - Reserved native work area for the Top Bar so maximised window captions stay accessible, and added the local date.
 - Added Files copy, cut and paste through the Windows clipboard and Shell, with collision-safe naming and cancellation requests.
+- Added an experimental Dock taskbar replacement mode with session-only visibility and native recovery.

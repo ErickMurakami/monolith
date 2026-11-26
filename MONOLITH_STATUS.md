@@ -11,6 +11,7 @@ Foundation and the first native application are implemented. Desktop Experience 
 - `src/calculator.rs` evaluates bounded arithmetic expressions entered in Spotlight.
 - `src/desktop.rs` discovers eligible windows and their display, detects fullscreen geometry and switches on explicit selection.
 - `src/dock.rs` presents ordered, configurable Start menu pins and open windows on the primary display. The Dock handles live updates, minimisation, restoration and fullscreen suppression.
+- `src/taskbar.rs` supports an opt-in Dock mode inside the existing primary Explorer taskbar band. A separate process restores native visibility when the Dock exits, and the Dock restores it if the companion exits first.
 - `src/config.rs` validates TOML, preserves invalid files and supports a safe start.
 - `src/top_bar.rs` reserves primary-monitor work area with a native AppBar and displays the local date, clock and battery in a borderless strip. Fullscreen windows and maximised foreground windows whose custom frames extend into the strip hide the bar and its hosted Island until the strip is clear.
 - `src/preview.rs` owns the on-demand DWM thumbnail shown when hovering a running Dock tile.
@@ -29,7 +30,7 @@ Foundation and the first native application are implemented. Desktop Experience 
 - `benchmarks/measure.ps1` samples Windows and Monolith memory, CPU and I/O.
 - The benchmark also records the busiest GPU engine from WDDM counters when available.
 - `docs/spotlight.png` shows a calculation in the running borderless Spotlight release build.
-- `docs/dock.png` is a cropped capture of a monochrome icon in the running Dock.
+- `docs/dock.png` shows the running replacement Dock centred in the native taskbar band.
 - `docs/top-bar.png` is a cropped live capture of the Top Bar status area.
 - `docs/island.png` shows the Island controlling a real Helium media session carrying local test audio.
 - `docs/control-center.png` shows the live borderless panel and the Windows settings actions.
@@ -49,6 +50,8 @@ The media smoke test used an isolated local Helium profile and real Windows medi
 The native AppBar checkpoint passed formatting, strict Clippy, 28 unit tests and the locked release build. On build 26300.9974 at 125% DPI, `tests/top-bar-appbar-smoke.ps1` verified reflow of an already-maximised native window, real caption minimise, restore, maximise and close clicks, fullscreen recovery, restoration of the work area on normal exit and forced termination, and safe mode. The AppBar re-registered after restarting the real Explorer Shell. File Explorer and Visual Studio Code maximised below the visible strip and retained their caption hit targets. IntelliJ IDEA 2026.3 ignored the top edge of the work area. The Top Bar yielded, the caption hit targets remained reachable, and the reservation stayed intact. Multiple physical displays and mixed-DPI transitions remain open. The cropped live date, time and battery capture was visually reviewed.
 
 The combined Top Bar and Island test used a real Helium media session and verified the Island's centred placement in the reserved band, artwork, media controls, playback timeline and fullscreen recovery.
+
+On build 26300.9974 with one display at 120 DPI, `tests/taskbar-smoke.ps1` verified the default Dock leaves the native taskbar visible, the explicit mode centres the Dock in the 60-pixel native band, and maximised and fullscreen applications retain their intended bounds. The original taskbar, work area and native auto-hide preference recovered after normal exit, separate forced termination of the Dock and its helper, a live safe-mode launch, an injected session-change notification and a real Explorer restart. The Dock capture was visually reviewed. Simultaneous termination still relies on Explorer recreating its window. Physical lock, sleep/resume, mixed-DPI transitions and multiple monitors remain unvalidated for the replacement mode.
 
 `tests/control-center-smoke.ps1` verified borderless styles, keyboard navigation, actual Core Audio level and mute changes, external notifications, foreground restoration, focus-loss dismissal, reopening from the Top Bar and opening Windows Settings. It restored the initial audio level and mute state. The live panel capture was visually reviewed. Mixed-DPI displays and physical output switching remain to be tested.
 
@@ -100,4 +103,4 @@ Ctrl+Alt+Space remains the temporary binding on build 26300.9974. The isolated W
 
 ## Next task
 
-Validate a session-only Windows taskbar visibility mechanism and whether the Dock can use its existing reserved band safely. Preserve the local Files copy and move checkpoint for the next independent implementation. Combined Win+Space first-key delivery, stable workspace identity, dedicated application placement and physical gestures remain open.
+Make pinned Dock tiles adopt verified running application groups and preserve interaction when switching native workspaces. Continue combined Win+Space first-key delivery, stable workspace identity, dedicated application placement and physical gesture validation. Complete Files deletion and recovery independently.
