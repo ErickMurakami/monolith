@@ -7,7 +7,6 @@ Foundation and the first native application are implemented. Desktop Experience 
 - `src/windows.rs` owns the borderless Spotlight window lifecycle, keyboard navigation, focus dismissal and shortcut registration.
 - `src/overlay.rs` shares the native overlay styles, palette and DPI scaling between Spotlight and Dock.
 - `src/hotkey.rs` owns `RegisterHotKey` registration and switches to Ctrl+Alt+Space when Windows reserves Win+Space.
-- `src/hotkey_override.rs` supports an opt-in Win+Space override that activates Spotlight through the registered chord after logo-key release.
 - `src/search.rs` discovers Start menu desktop shortcuts and ranks local matches.
 - `src/calculator.rs` evaluates bounded arithmetic expressions entered in Spotlight.
 - `src/desktop.rs` discovers eligible windows and their display, detects fullscreen geometry and switches on explicit selection.
@@ -79,8 +78,10 @@ The Windows CI checkpoint `4780b92` built and uploaded `monolith.exe`. Run `4582
 
 ## Shortcut compatibility
 
-The temporary Ctrl+Alt+Space path still passes `-Hotkey`. With `win_space_override = true`, `tests/spotlight-override-smoke.ps1` passed twenty native trials on build 26300.9974. It exercised both Windows keys, normal, maximised and fullscreen windows in another process, first-key delivery after a requested 15 ms delay, repeat suppression, focus restoration, safe mode and an unchanged keyboard layout. The observer saw no top-level system input or Start window during the trials. Physical keyboard trials and elevated foreground behaviour remain unverified. The normal startup and safe-mode paths keep the override disabled by default.
+Ctrl+Alt+Space remains the temporary binding on build 26300.9974. The isolated Win+Space bridge could activate Spotlight and left the fixture keyboard layout unchanged. Combined desktop trials lost the first character at a requested 15 ms interval even after assigning focus before refreshing results. The experimental binding from `b939a66` was withdrawn. The code and alternating-character regression test are preserved locally. Win+Space remains the target, with physical keyboard and elevated foreground validation pending.
+
+`tests/desktop-smoke.ps1 -Hotkey -Combined` passed with Dock, Top Bar and Island enabled. It verified direct typing through the native fallback, focus restoration, a clean restart and release of the registered chord after terminating the test process.
 
 ## Next task
 
-Validate combined resident execution with Win+Space enabled. Stable workspace identity, dedicated application placement, physical gestures and crash-safe taskbar restoration remain open. Wire the bounded read-only Git status backend into Files while those integrations are investigated.
+Wire the bounded read-only Git status backend into Files. Continue investigating combined Win+Space first-key delivery, stable workspace identity, dedicated application placement, physical gestures and crash-safe taskbar restoration independently.

@@ -248,7 +248,7 @@ pub fn run() -> io::Result<()> {
         let show_dock = !safe && (settings.dock || args.iter().any(|arg| arg == "--dock"));
         let show_top_bar = !safe && (settings.top_bar || args.iter().any(|arg| arg == "--top-bar"));
         let show_island = !safe && (settings.island || args.iter().any(|arg| arg == "--island"));
-        let hotkey = Hotkey::bind(hwnd, settings.shortcut, settings.win_space_override);
+        let hotkey = Hotkey::bind(hwnd, settings.shortcut);
         let order_path = config_path.with_file_name("dock-order.toml");
         let pins = if show_dock && !settings.dock_pins.is_empty() {
             let apps = (*state_ptr)
@@ -525,9 +525,6 @@ unsafe fn run_window(
             if center.as_ref().is_some_and(|panel| panel.handle_key(&msg)) {
                 continue;
             }
-            if msg.hwnd == hwnd && hotkey.dispatch(msg.message, msg.wParam) {
-                continue;
-            }
             if msg.hwnd == hwnd && msg.message == WM_HOTKEY && msg.wParam == hotkey::ID as usize {
                 if IsWindowVisible(hwnd) != 0 && GetForegroundWindow() == hwnd {
                     dismiss(hwnd, state, true);
@@ -582,13 +579,10 @@ unsafe fn run_window(
 
 unsafe fn show(hwnd: HWND, state: *mut State, dock: Option<&Dock>) {
     unsafe {
-        if (*state).apps.is_none() {
-            (*state).apps = Some(search::discover(roots()));
-        }
-        if IsWindowVisible(hwnd) == 0 {
+        let opening = IsWindowVisible(hwnd) == 0;
+        if opening {
             (*state).previous_foreground = GetForegroundWindow();
             (*state).desktop = dock.and_then(Dock::inventory);
-            refresh(state);
             let foreground = GetForegroundWindow();
             let monitor = if foreground.is_null() {
                 let mut cursor = POINT::default();
@@ -624,12 +618,18 @@ unsafe fn show(hwnd: HWND, state: *mut State, dock: Option<&Dock>) {
                 );
                 layout(hwnd, state);
             }
-            fit_results(hwnd, state);
         }
         ShowWindow(hwnd, SW_SHOW);
         SetForegroundWindow(hwnd);
         SetFocus((*state).edit);
         SendMessageW((*state).edit, EM_SETSEL, 0, -1);
+        if (*state).apps.is_none() {
+            (*state).apps = Some(search::discover(roots()));
+        }
+        if opening {
+            refresh(state);
+            fit_results(hwnd, state);
+        }
     }
 }
 

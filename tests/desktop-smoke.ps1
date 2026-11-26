@@ -6,6 +6,7 @@ param(
     [switch]$TopBar,
     [switch]$AutoHide,
     [switch]$Hotkey,
+    [switch]$Combined,
     [switch]$Preview,
     [switch]$HelpersOnly,
     [string]$Capture
@@ -331,12 +332,20 @@ function Invoke-HotkeySmoke($Application) {
         $owner = [uint32]0
         $thread = [DesktopSmoke]::GetWindowThreadProcessId($fixture.Handle, [ref]$owner)
         $layout = [DesktopSmoke]::GetKeyboardLayout($thread)
-        $launcher = Start-Process -FilePath $Application -ArgumentList '--resident' -PassThru
+        $launchArgs = @('--resident')
+        if ($Combined) { $launchArgs += '--dock', '--top-bar', '--island' }
+        $launcher = Start-Process -FilePath $Application -ArgumentList $launchArgs -PassThru
         Wait-Until { [DesktopSmoke]::FindClass('MonolithSpotlight') -ne [IntPtr]::Zero } 'The resident Spotlight was not created.'
         $window = [DesktopSmoke]::FindClass('MonolithSpotlight')
         Wait-Until { [DesktopSmoke]::FindChild($window, 'Edit') -ne [IntPtr]::Zero } 'The resident Spotlight was not ready.'
         if ([DesktopSmoke]::IsWindowVisible($window)) { throw 'Resident Spotlight should start hidden.' }
+        if ($Combined) {
+            foreach ($surface in 'MonolithDock', 'MonolithTopBar') {
+                Wait-Until { [DesktopSmoke]::FindVisibleForProcess($surface, [uint32]$launcher.Id) -ne [IntPtr]::Zero } "Combined startup did not show $surface."
+            }
+        }
         $alternate = [uint16[]]@(0xA2,0xA4)
+        $digit = 1
         foreach ($state in 'normal','maximised','minimised','fullscreen') {
             $target = $fixture
             if ($state -eq 'maximised') {
@@ -356,11 +365,11 @@ function Invoke-HotkeySmoke($Application) {
             Wait-Until { [DesktopSmoke]::IsWindowVisible($window) } "The global shortcut did not show Spotlight in $state."
             Wait-Until { [DesktopSmoke]::GetForegroundWindow() -eq $window } "Spotlight opened without foreground focus in $state."
             $edit = [DesktopSmoke]::FindChild($window, 'Edit')
-            if (![DesktopSmoke]::TypeVerificationDigit($window)) { throw 'Could not type into the focused Spotlight.' }
+            if (![DesktopSmoke]::PressChord([uint16[]]@(), (0x30 + $digit), $false)) { throw 'Could not type into the focused Spotlight.' }
             Wait-Until {
                 $entry = New-Object Text.StringBuilder 32
                 [void][DesktopSmoke]::Read($edit, 0xD, [UIntPtr]::new([uint32]32), $entry)
-                $entry.ToString() -eq '7'
+                $entry.ToString() -eq "$digit"
             } 'The search field did not receive typing without a click.'
             if ($state -eq 'maximised') {
                 if (![DesktopSmoke]::PressChord($alternate, 0x20, $false)) { throw 'Could not send the toggle chord.' }
@@ -371,11 +380,27 @@ function Invoke-HotkeySmoke($Application) {
                 ![DesktopSmoke]::IsWindowVisible($window) -and
                 [DesktopSmoke]::GetForegroundWindow() -eq $target.Handle
             } "Spotlight did not dismiss and return focus in $state."
+            $digit++
         }
         if ([DesktopSmoke]::GetKeyboardLayout($thread) -ne $layout) { throw 'The keyboard layout changed.' }
         [void][DesktopSmoke]::Post($window, 0x10, [UIntPtr]::Zero, [IntPtr]::Zero)
         Wait-Until { $launcher.HasExited } 'The resident process did not exit.'
         'Native fallback, repeat suppression, fullscreen activation, direct typing and focus restore passed.'
+        if ($Combined) {
+            $launcher = Start-Process -FilePath $Application -ArgumentList $launchArgs -PassThru
+            Wait-Until {
+                $window = [DesktopSmoke]::FindClass('MonolithSpotlight')
+                $process = [uint32]0
+                [void][DesktopSmoke]::GetWindowThreadProcessId($window, [ref]$process)
+                $process -eq $launcher.Id -and [DesktopSmoke]::FindChild($window, 'Edit') -ne [IntPtr]::Zero
+            } 'The combined shell did not restart after clean exit.'
+            $window = [DesktopSmoke]::FindClass('MonolithSpotlight')
+            Stop-Process -InputObject $launcher
+            Wait-Until { $launcher.HasExited } 'The combined shell did not stop for the recovery check.'
+            if (![DesktopSmoke]::RegisterHotKey([IntPtr]::Zero, 811, 0x4003, 0x20)) { throw 'Windows did not release the shortcut after termination.' }
+            [void][DesktopSmoke]::UnregisterHotKey([IntPtr]::Zero, 811)
+            'Combined operation, clean restart and shortcut recovery after termination passed.'
+        }
     } finally {
         if ($launcher -and !$launcher.HasExited) {
             if ($window -ne [IntPtr]::Zero) { [void][DesktopSmoke]::Post($window, 0x10, [UIntPtr]::Zero, [IntPtr]::Zero) }
