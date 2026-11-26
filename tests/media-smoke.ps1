@@ -119,8 +119,16 @@ session.setActionHandler('previoustrack', () => {
     Wait-Until {
         $surface = [DesktopSmoke]::FindVisibleForProcess('MonolithIsland', [uint32]$launcher.Id)
         $surface -ne [IntPtr]::Zero -and (Read-Text ([DesktopSmoke]::GetDlgItem($surface, 1))) -like '*Verification track 1*Local fixture*'
-    } 'The installed browser did not publish its local fixture to Windows media sessions.'
+    } 'The installed browser did not publish its local fixture to Windows media sessions.' 15
     $island = [DesktopSmoke]::FindVisibleForProcess('MonolithIsland', [uint32]$launcher.Id)
+    $bar = [DesktopSmoke]::FindVisibleForProcess('MonolithTopBar', [uint32]$launcher.Id)
+    $band = [DesktopSmoke]::Bounds($bar)
+    $compact = [DesktopSmoke]::Bounds($island)
+    $wideEnough = ($band[2] - $band[0]) -ge (780 * [DesktopSmoke]::GetDpiForWindow($bar) / 96)
+    if ($compact[1] -lt $band[1] -or ($wideEnough -and $compact[1] -ge $band[3]) -or
+        [Math]::Abs(($compact[0] + $compact[2]) - ($band[0] + $band[2])) -gt 2) {
+        throw 'The compact Island was not centred in the reserved Top Bar band.'
+    }
     $label = [DesktopSmoke]::GetDlgItem($island, 1)
     $artwork = [DesktopSmoke]::GetDlgItem($island, 5)
     if (([DesktopSmoke]::Style($island, -16) -band 0x00CF0000) -or

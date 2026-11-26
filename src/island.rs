@@ -314,6 +314,13 @@ fn schedule(hwnd: HWND) {
     }
 }
 
+pub fn host_changed(host: HWND) {
+    let target = TARGET.get();
+    if !target.is_null() && unsafe { GetWindow(target, GW_OWNER) } == host {
+        schedule(target);
+    }
+}
+
 unsafe fn layout(hwnd: HWND, state: *mut State) {
     unsafe {
         KillTimer(hwnd, PROGRESS);
@@ -329,8 +336,13 @@ unsafe fn layout(hwnd: HWND, state: *mut State) {
             cbSize: size_of::<MONITORINFO>() as u32,
             ..Default::default()
         };
+        let host = (*state).host;
         if GetMonitorInfoW(monitor, &mut info) == 0
-            || desktop::foreground_covers_monitor(monitor, &info.rcMonitor)
+            || if host.is_null() {
+                desktop::foreground_covers_monitor(monitor, &info.rcMonitor)
+            } else {
+                IsWindowVisible(host) == 0
+            }
         {
             if let Some(media) = (*state).media.as_ref() {
                 media.request_artwork(false);
@@ -403,10 +415,14 @@ unsafe fn layout(hwnd: HWND, state: *mut State) {
         let left = work.left + (work_width - width) / 2;
         let mut top = work.top + scale(4);
         let host = (*state).host;
-        if !host.is_null() && work_width < scale(780) {
+        if !host.is_null() {
             let mut rect = RECT::default();
             if GetWindowRect(host, &mut rect) != 0 {
-                top = rect.bottom + scale(4);
+                top = if work_width < scale(780) {
+                    rect.bottom + scale(4)
+                } else {
+                    rect.top
+                };
             }
         }
         SetWindowTextW(controls[0], wide(&title).as_ptr());

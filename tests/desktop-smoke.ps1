@@ -24,6 +24,7 @@ public static class DesktopSmoke {
     [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hwnd);
     [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr hwnd);
     [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hwnd);
+    [DllImport("user32.dll")] public static extern uint GetDpiForWindow(IntPtr hwnd);
     [DllImport("user32.dll")] public static extern IntPtr GetDlgItem(IntPtr parent, int id);
     [DllImport("user32.dll")] public static extern uint GetDoubleClickTime();
     [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint process);
@@ -120,16 +121,22 @@ public static class DesktopSmoke {
     public static bool RightClickLeftEdge(IntPtr target) {
         return PointerClick(target, 0.002, 0.5, 0x0008, 0x0010);
     }
+    public static bool ClickWindowPoint(IntPtr target, int x, int y) {
+        return PointerClick(target, new Point { X = x, Y = y }, 0x0002, 0x0004);
+    }
     static bool PointerClick(IntPtr target, double horizontal, double verticalPosition, uint down, uint up) {
         Rect bounds;
-        Point original;
-        if (target == IntPtr.Zero || !GetWindowRect(target, out bounds) || !GetCursorPos(out original))
+        if (target == IntPtr.Zero || !GetWindowRect(target, out bounds))
             return false;
         var point = new Point {
             X = bounds.Left + (int)((bounds.Right - bounds.Left) * horizontal),
             Y = bounds.Top + (int)((bounds.Bottom - bounds.Top) * verticalPosition),
         };
-        if (WindowFromPoint(point) != target || !SetCursorPos(point.X, point.Y))
+        return PointerClick(target, point, down, up);
+    }
+    static bool PointerClick(IntPtr target, Point point, uint down, uint up) {
+        Point original;
+        if (target == IntPtr.Zero || !GetCursorPos(out original) || WindowFromPoint(point) != target || !SetCursorPos(point.X, point.Y))
             return false;
         try {
             if (WindowFromPoint(point) != target)
@@ -180,8 +187,8 @@ public static class DesktopSmoke {
 }
 "@
 
-function Wait-Until($Condition, [string]$Failure) {
-    $deadline = [DateTime]::UtcNow.AddSeconds(5)
+function Wait-Until($Condition, [string]$Failure, [int]$TimeoutSeconds = 5) {
+    $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
     do {
         [Windows.Forms.Application]::DoEvents()
         if (& $Condition) { return }

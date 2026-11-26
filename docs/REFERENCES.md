@@ -69,6 +69,7 @@ Monolith must remain independent of Windhawk, PowerToys and other external runti
 | Workspaces / Mission Control | [Virtual Desktop Helper](https://github.com/ramensoftware/windhawk-mods/blob/main/mods/virtual-desktop-helper.wh.cpp), [Komorebi](https://github.com/LGUG2Z/komorebi), [GlazeWM](https://github.com/glzr-io/glazewm) | Desktop identity, ordering, switching, window moves, build compatibility |
 | Touchpad | Windows Settings and Windows documentation; GlazeWM / Komorebi | Precision touchpad configuration and directional desktop navigation; physical validation |
 | Dock / taskbar | Windhawk Taskbar Multi Tray, Taskbar Tray System Icon Tweaks | Visibility, Explorer restart, app grouping, recovery |
+| Top Bar | Windows Application Desktop Toolbars, Windhawk Custom Top Bar | Native work-area reservation and Shell restart |
 | Island | Windhawk Taskbar Music Lounge; Windows media session APIs | Metadata, transport and lifecycle |
 | Files / Quick Look | PowerToys Peek, Windows samples | Preview, shell operations, cancellation, large directories |
 | Git | [Git documentation](https://git-scm.com/docs/git-status), Rust Git libraries | Porcelain status, branch and upstream state, bounded async queries |
@@ -91,6 +92,12 @@ Add a short entry only after meaningful investigation. Do not duplicate architec
 - Evidence: <tested / not tested; exact test or result>
 - Next step: <remaining blocker or implementation task>
 ```
+
+### Top Bar and desktop work area
+
+- Use Explorer's documented `ABM_NEW`, `ABM_QUERYPOS`, `ABM_SETPOS` and `ABM_REMOVE` messages for a native work-area reservation. The MIT-licensed Windhawk Custom Top Bar uses the same APIs. Monolith implements registration and lifecycle independently from the Windows documentation. [Microsoft Application Desktop Toolbars](https://learn.microsoft.com/en-us/windows/win32/shell/application-desktop-toolbars), [Windhawk Custom Top Bar at f8c7ee7](https://github.com/mrallayi/windhawk-mods/blob/f8c7ee7e56a4018cf528449c88cfa18f4342475f/mods/custom-top-bar.wh.cpp)
+- On build 26300.9974, the `TaskbarCreated` broadcast alone did not recover the reservation after terminating and relaunching Explorer. A scoped WinEvent check of the Shell window identity recovered registration on the same build. [Microsoft taskbar creation notification](https://learn.microsoft.com/en-us/windows/win32/shell/taskbar#taskbar-creation-notification)
+- IntelliJ IDEA 2026.3 can maximise its native window to the physical top edge while Explorer reports the reserved work area. Win32 permits applications to override maximised geometry, and the JetBrains Runtime implements custom maximised bounds in `AwtFrame::WmGetMinMaxInfo`. Monolith reads the foreground window's DWM frame on WinEvents and yields the strip when it overlaps. The JetBrains source is GPL-2.0 with the Classpath exception and was reviewed by reference only. [Windows window features](https://learn.microsoft.com/en-us/windows/win32/winmsg/window-features), [JetBrains Runtime awt_Frame.cpp at 6947004](https://github.com/JetBrains/JetBrainsRuntime/blob/694700444776d93d8fc9436fa4f1d24b951f6518/src/java.desktop/windows/native/libawt/windows/awt_Frame.cpp)
 
 ### Spotlight shortcut and foreground activation
 

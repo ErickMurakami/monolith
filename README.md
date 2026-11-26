@@ -19,7 +19,7 @@ Start a query with `@` to find an open window by its title. Press Enter or doubl
 
 Launch with `--dock` to show the experimental Dock. It floats along the bottom of the selected display and hides when a foreground window enters fullscreen there. Click a window to switch to it, or click its button again while it is active to minimise it. A group opens a native menu for choosing one of its windows. Hover over a running tile to preview its active or first visible window. **Search** opens Spotlight. **Exit** stops Monolith. The Dock shows up to eight pins and window groups depending on available space.
 
-Launch with `--top-bar` to show a borderless status bar on the primary display. It displays the local clock and battery status when Windows reports a battery. Right-click the bar to open Spotlight, Control Center or exit Monolith. It hides during fullscreen use.
+Launch with `--top-bar` to show a borderless status bar on the primary display. Windows reserves space for the bar so maximised windows keep their captions accessible. It displays the local date and time, plus battery status when available. Right-click the bar to open Spotlight, Control Center or exit Monolith. The bar hides during fullscreen use or when a maximised foreground window extends into the strip despite the reservation.
 
 Launch with `--island` to display the title and artist from the current Windows media session. Click the media label to expand the artwork and play, pause, previous and next controls where the source provides them. A progress strip appears when Windows reports a valid timeline. Use `--island --top-bar` to place it in the centre of the status bar. The Island hides during fullscreen use and when Windows has no matching media session.
 
@@ -73,7 +73,7 @@ See [project status](MONOLITH_STATUS.md) and [benchmark procedure](benchmarks/RE
 
 ![Cropped Dock capture showing the monochrome Shell icon for a verification shortcut](docs/dock.png)
 
-![Cropped Top Bar capture showing system power and clock](docs/top-bar.png)
+![Cropped Top Bar capture showing battery, date and time](docs/top-bar.png)
 
 ![Dynamic Island showing a live local media session and transport controls](docs/island.png)
 

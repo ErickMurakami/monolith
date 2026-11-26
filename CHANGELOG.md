@@ -29,3 +29,4 @@
 - Added directional switching between existing Windows desktops in Mission Control.
 - Added on-demand Git branch, upstream and file status in Monolith Files.
 - Added terminal and configured IDE actions to the Files context menu.
+- Reserved native work area for the Top Bar so maximised window captions stay accessible, and added the local date.

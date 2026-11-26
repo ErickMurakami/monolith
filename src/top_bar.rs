@@ -1,7 +1,7 @@
 //! Opt-in borderless status overlay with native clock and power data.
 
 use crate::{
-    desktop,
+    desktop, island,
     overlay::{self, Palette},
     windows::{shell_menu, wide},
 };
@@ -14,15 +14,22 @@ use windows_sys::Win32::{
         SystemInformation::GetLocalTime,
         SystemServices::{SS_CENTERIMAGE, SS_RIGHT},
     },
-    UI::{Accessibility::*, HiDpi::GetDpiForWindow, WindowsAndMessaging::*},
+    UI::{
+        Accessibility::*,
+        HiDpi::{GetDpiForWindow, GetSystemMetricsForDpi},
+        Shell::*,
+        WindowsAndMessaging::*,
+    },
 };
 
 const CLOCK: usize = 1;
 const LAYOUT: usize = 2;
+const APPBAR_NOTIFICATION: u32 = WM_APP + 20;
 
 thread_local! {
     static BAR_WINDOW: Cell<HWND> = const { Cell::new(null_mut()) };
     static LAYOUT_PENDING: Cell<bool> = const { Cell::new(false) };
+    static SHELL_WINDOW: Cell<HWND> = const { Cell::new(null_mut()) };
 }
 
 pub struct TopBar {
@@ -39,6 +46,12 @@ struct State {
     brush: HBRUSH,
     font: HFONT,
     dpi: u32,
+    registered: bool,
+    reservation: Option<[i32; 4]>,
+    taskbar_created: u32,
+    shell: HWND,
+    region_size: Option<(i32, i32)>,
+    recovery_attempts: u8,
 }
 
 impl TopBar {
@@ -93,6 +106,12 @@ impl TopBar {
                     status: null_mut(),
                     font: null_mut(),
                     dpi: 0,
+                    registered: false,
+                    reservation: None,
+                    taskbar_created: RegisterWindowMessageW(wide("TaskbarCreated").as_ptr()),
+                    shell: GetShellWindow(),
+                    region_size: None,
+                    recovery_attempts: 0,
                 }),
             };
             if bar.state.brush.is_null() {
@@ -119,7 +138,13 @@ impl TopBar {
             let state = &raw mut *bar.state;
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, state as isize);
             BAR_WINDOW.set(hwnd);
-            for event in [EVENT_SYSTEM_FOREGROUND, EVENT_OBJECT_LOCATIONCHANGE] {
+            SHELL_WINDOW.set((*state).shell);
+            for event in [
+                EVENT_SYSTEM_FOREGROUND,
+                EVENT_OBJECT_LOCATIONCHANGE,
+                EVENT_OBJECT_SHOW,
+                EVENT_OBJECT_DESTROY,
+            ] {
                 let hook = SetWinEventHook(
                     event,
                     event,
@@ -135,6 +160,11 @@ impl TopBar {
                 bar.hooks.push(hook);
             }
             place(hwnd, state);
+            if (*state).reservation.is_none() {
+                return Err(io::Error::other(
+                    "Windows did not reserve the Top Bar work area",
+                ));
+            }
             Ok(bar)
         }
     }
@@ -143,8 +173,10 @@ impl TopBar {
 impl Drop for TopBar {
     fn drop(&mut self) {
         BAR_WINDOW.set(null_mut());
+        SHELL_WINDOW.set(null_mut());
         LAYOUT_PENDING.set(false);
         unsafe {
+            release_reservation(self.hwnd, &raw mut *self.state);
             for hook in self.hooks.drain(..) {
                 UnhookWinEvent(hook);
             }
@@ -155,22 +187,72 @@ impl Drop for TopBar {
     }
 }
 
+fn bar_data(hwnd: HWND) -> APPBARDATA {
+    APPBARDATA {
+        cbSize: size_of::<APPBARDATA>() as u32,
+        hWnd: hwnd,
+        ..Default::default()
+    }
+}
+
+fn appbar(hwnd: HWND, message: u32) {
+    unsafe { SHAppBarMessage(message, &mut bar_data(hwnd)) };
+}
+
+unsafe fn release_reservation(hwnd: HWND, state: *mut State) {
+    unsafe {
+        if (*state).registered {
+            (*state).registered = false;
+            (*state).reservation = None;
+            appbar(hwnd, ABM_REMOVE);
+        }
+    }
+}
+
+unsafe fn reserve(hwnd: HWND, state: *mut State, monitor: RECT, height: i32) -> Option<RECT> {
+    unsafe {
+        let mut data = bar_data(hwnd);
+        if !(*state).registered {
+            data.uCallbackMessage = APPBAR_NOTIFICATION;
+            if SHAppBarMessage(ABM_NEW, &mut data) == 0 {
+                return None;
+            }
+            (*state).registered = true;
+        }
+        data.uEdge = ABE_TOP;
+        data.rc = RECT {
+            bottom: monitor.top + height,
+            ..monitor
+        };
+        if SHAppBarMessage(ABM_QUERYPOS, &mut data) == 0 {
+            return None;
+        }
+        data.rc.bottom = data.rc.top + height;
+        let desired = [data.rc.left, data.rc.top, data.rc.right, data.rc.bottom];
+        if (*state).reservation != Some(desired) {
+            if SHAppBarMessage(ABM_SETPOS, &mut data) == 0 {
+                return None;
+            }
+            (*state).reservation = Some([data.rc.left, data.rc.top, data.rc.right, data.rc.bottom]);
+        }
+        Some(data.rc)
+    }
+}
+
 unsafe extern "system" fn foreground_event(
     _: HWINEVENTHOOK,
-    _: u32,
+    event: u32,
     window: HWND,
     object: i32,
     child: i32,
     _: u32,
     _: u32,
 ) {
-    if object == OBJID_WINDOW
-        && child == 0
-        && !window.is_null()
-        && unsafe { GetForegroundWindow() } == window
-    {
+    if object == OBJID_WINDOW && child == 0 && !window.is_null() {
+        let shell_event = matches!(event, EVENT_OBJECT_SHOW | EVENT_OBJECT_DESTROY)
+            && unsafe { GetShellWindow() } != SHELL_WINDOW.get();
         let bar = BAR_WINDOW.get();
-        if !bar.is_null() {
+        if !bar.is_null() && (shell_event || unsafe { GetForegroundWindow() } == window) {
             schedule_layout(bar);
         }
     }
@@ -182,22 +264,69 @@ fn schedule_layout(hwnd: HWND) {
     }
 }
 
+unsafe fn hide(hwnd: HWND) {
+    unsafe {
+        KillTimer(hwnd, CLOCK);
+        if ShowWindow(hwnd, SW_HIDE) != 0 {
+            island::host_changed(hwnd);
+        }
+    }
+}
+
 unsafe fn place(hwnd: HWND, state: *mut State) {
     unsafe {
+        let shell = GetShellWindow();
+        if shell != (*state).shell {
+            release_reservation(hwnd, state);
+            (*state).shell = shell;
+            SHELL_WINDOW.set(shell);
+            (*state).recovery_attempts = 25;
+        }
         let monitor = MonitorFromPoint(POINT::default(), MONITOR_DEFAULTTOPRIMARY);
         let mut info = MONITORINFO {
             cbSize: size_of::<MONITORINFO>() as u32,
             ..Default::default()
         };
-        if GetMonitorInfoW(monitor, &mut info) == 0
-            || desktop::foreground_covers_monitor(monitor, &info.rcMonitor)
-        {
-            KillTimer(hwnd, CLOCK);
-            ShowWindow(hwnd, SW_HIDE);
+        if GetMonitorInfoW(monitor, &mut info) == 0 {
+            release_reservation(hwnd, state);
+            hide(hwnd);
             return;
+        }
+        if MonitorFromWindow(hwnd, MONITOR_DEFAULTTONULL) != monitor {
+            SetWindowPos(
+                hwnd,
+                null_mut(),
+                info.rcMonitor.left,
+                info.rcMonitor.top,
+                1,
+                1,
+                SWP_HIDEWINDOW | SWP_NOZORDER | SWP_NOACTIVATE,
+            );
         }
         let dpi = GetDpiForWindow(hwnd);
         let scale = |value| overlay::scale(value, dpi);
+        let strip_height = scale(27);
+        let resize_margin = GetSystemMetricsForDpi(SM_CYSIZEFRAME, dpi)
+            + GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi);
+        let Some(bounds) = reserve(hwnd, state, info.rcMonitor, strip_height + resize_margin)
+        else {
+            release_reservation(hwnd, state);
+            hide(hwnd);
+            if (*state).recovery_attempts > 0 {
+                (*state).recovery_attempts -= 1;
+                schedule_layout(hwnd);
+            }
+            return;
+        };
+        (*state).recovery_attempts = 0;
+        let strip = RECT {
+            bottom: bounds.top + strip_height,
+            ..bounds
+        };
+        if desktop::foreground_covers_top_strip(monitor, &info.rcMonitor, &strip) {
+            hide(hwnd);
+            return;
+        }
         if (*state).dpi != dpi {
             let font = CreateFontW(
                 -scale(13),
@@ -222,30 +351,54 @@ unsafe fn place(hwnd: HWND, state: *mut State) {
                 (*state).dpi = dpi;
             }
         }
-        let work = info.rcWork;
         let inset = scale(8);
-        let width = (work.right - work.left - 2 * inset).max(1);
-        let height = scale(27);
+        let width = (bounds.right - bounds.left).max(1);
+        let height = (bounds.bottom - bounds.top).max(1);
+        // Keep the reservation beyond the visible strip for maximised custom frames.
+        if (*state).region_size != Some((width, strip_height)) {
+            let region = CreateRectRgn(0, 0, width, strip_height);
+            if region.is_null() || SetWindowRgn(hwnd, region, 1) == 0 {
+                DeleteObject(region);
+                release_reservation(hwnd, state);
+                hide(hwnd);
+                return;
+            }
+            (*state).region_size = Some((width, strip_height));
+        }
         MoveWindow(
             (*state).status,
             inset,
             0,
             (width - 2 * inset).max(1),
-            height,
+            strip_height,
             0,
         );
         let was_visible = IsWindowVisible(hwnd) != 0;
-        SetWindowPos(
-            hwnd,
-            HWND_TOPMOST,
-            work.left + inset,
-            work.top + scale(4),
-            width,
-            height,
-            SWP_SHOWWINDOW | SWP_NOACTIVATE,
-        );
+        let mut previous = RECT::default();
+        let needs_position = !was_visible
+            || GetWindowRect(hwnd, &mut previous) == 0
+            || (previous.left, previous.top, previous.right, previous.bottom)
+                != (bounds.left, bounds.top, bounds.right, bounds.bottom);
+        if needs_position
+            && SetWindowPos(
+                hwnd,
+                HWND_TOPMOST,
+                bounds.left,
+                bounds.top,
+                width,
+                height,
+                SWP_SHOWWINDOW | SWP_NOACTIVATE,
+            ) == 0
+        {
+            release_reservation(hwnd, state);
+            hide(hwnd);
+            return;
+        }
         if !was_visible {
             refresh_status(hwnd, state);
+        }
+        if needs_position {
+            island::host_changed(hwnd);
         }
     }
 }
@@ -257,7 +410,12 @@ fn minute_delay(seconds: u16, milliseconds: u16) -> u32 {
 }
 
 fn status_text(time: SYSTEMTIME, power: Option<SYSTEM_POWER_STATUS>, portuguese: bool) -> String {
-    let time = format!("{:02}:{:02}", time.wHour, time.wMinute);
+    let date = if portuguese {
+        format!("{:02}/{:02}/{:04}", time.wDay, time.wMonth, time.wYear)
+    } else {
+        format!("{:04}-{:02}-{:02}", time.wYear, time.wMonth, time.wDay)
+    };
+    let time = format!("{date}    {:02}:{:02}", time.wHour, time.wMinute);
     let Some(power) = power.filter(|power| power.BatteryLifePercent <= 100) else {
         return time;
     };
@@ -299,6 +457,33 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
             return DefWindowProcW(hwnd, msg, wp, lp);
         }
         match msg {
+            event if event == (*state).taskbar_created => {
+                (*state).recovery_attempts = 25;
+                schedule_layout(hwnd);
+                0
+            }
+            APPBAR_NOTIFICATION => {
+                if matches!(
+                    wp as u32,
+                    ABN_POSCHANGED | ABN_FULLSCREENAPP | ABN_STATECHANGE
+                ) {
+                    schedule_layout(hwnd);
+                }
+                0
+            }
+            WM_WINDOWPOSCHANGED | WM_ACTIVATE => {
+                if (*state).registered {
+                    appbar(
+                        hwnd,
+                        if msg == WM_ACTIVATE {
+                            ABM_ACTIVATE
+                        } else {
+                            ABM_WINDOWPOSCHANGED
+                        },
+                    );
+                }
+                DefWindowProcW(hwnd, msg, wp, lp)
+            }
             WM_CLOSE => {
                 PostMessageW((*state).launcher, WM_CLOSE, 0, 0);
                 0
@@ -359,6 +544,9 @@ mod tests {
     #[test]
     fn displays_known_battery_status_and_omits_unknown_percentages() {
         let time = SYSTEMTIME {
+            wYear: 2026,
+            wMonth: 11,
+            wDay: 26,
             wHour: 9,
             wMinute: 3,
             ..Default::default()
@@ -371,12 +559,16 @@ mod tests {
         };
         assert_eq!(
             status_text(time, Some(charging), false),
-            "75% charging    09:03"
+            "75% charging    2026-11-26    09:03"
         );
         let unknown = SYSTEM_POWER_STATUS {
             BatteryLifePercent: 255,
             ..charging
         };
-        assert_eq!(status_text(time, Some(unknown), false), "09:03");
+        assert_eq!(
+            status_text(time, Some(unknown), false),
+            "2026-11-26    09:03"
+        );
+        assert_eq!(status_text(time, None, true), "26/11/2026    09:03");
     }
 }

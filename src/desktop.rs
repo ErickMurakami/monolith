@@ -295,12 +295,18 @@ fn describe(
 }
 
 fn covers_display(hwnd: HWND, display: &RECT) -> bool {
-    let mut frame = RECT::default();
-    // Both rectangles use screen pixels on the per-monitor-aware GUI thread.
     unsafe {
         if IsZoomed(hwnd) != 0 && (GetWindowLongW(hwnd, GWL_STYLE) as u32 & WS_CAPTION) != 0 {
             return false;
         }
+    }
+    frame_bounds(hwnd).is_some_and(|frame| matches_display(&frame, display))
+}
+
+fn frame_bounds(hwnd: HWND) -> Option<RECT> {
+    let mut frame = RECT::default();
+    // Both APIs return screen pixels on the per-monitor-aware GUI thread.
+    unsafe {
         if DwmGetWindowAttribute(
             hwnd,
             DWMWA_EXTENDED_FRAME_BOUNDS as u32,
@@ -309,10 +315,10 @@ fn covers_display(hwnd: HWND, display: &RECT) -> bool {
         ) < 0
             && GetWindowRect(hwnd, &mut frame) == 0
         {
-            return false;
+            return None;
         }
     }
-    matches_display(&frame, display)
+    Some(frame)
 }
 
 fn matches_display(frame: &RECT, display: &RECT) -> bool {
@@ -371,15 +377,34 @@ impl WindowTarget {
     }
 }
 
-pub fn foreground_covers_monitor(monitor: HMONITOR, bounds: &RECT) -> bool {
+fn foreground_on_monitor(monitor: HMONITOR) -> Option<HWND> {
     unsafe {
         let foreground = GetForegroundWindow();
-        identity(foreground).is_some_and(|(process, _)| process != std::process::id())
+        (identity(foreground).is_some_and(|(process, _)| process != std::process::id())
             && eligible(foreground)
             && IsIconic(foreground) == 0
-            && MonitorFromWindow(foreground, MONITOR_DEFAULTTONULL) == monitor
-            && covers_display(foreground, bounds)
+            && MonitorFromWindow(foreground, MONITOR_DEFAULTTONULL) == monitor)
+            .then_some(foreground)
     }
+}
+
+pub fn foreground_covers_monitor(monitor: HMONITOR, bounds: &RECT) -> bool {
+    foreground_on_monitor(monitor).is_some_and(|hwnd| covers_display(hwnd, bounds))
+}
+
+pub fn foreground_covers_top_strip(monitor: HMONITOR, display: &RECT, strip: &RECT) -> bool {
+    foreground_on_monitor(monitor).is_some_and(|hwnd| {
+        if unsafe { IsZoomed(hwnd) } == 0 {
+            return covers_display(hwnd, display);
+        }
+        // Some custom frames override maximised geometry and ignore the work area.
+        frame_bounds(hwnd).is_some_and(|frame| {
+            frame.top < strip.bottom
+                && frame.bottom > strip.top
+                && frame.left < strip.right
+                && frame.right > strip.left
+        })
+    })
 }
 
 #[cfg(test)]
