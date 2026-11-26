@@ -608,6 +608,7 @@ unsafe fn record(state: *mut State, incoming: Rc<Incoming>) {
             unread: true,
         });
         history.truncate(HISTORY_LIMIT);
+        publish_unread(state);
         if !(*state).centre.is_null() && IsWindowVisible((*state).centre) != 0 {
             InvalidateRect((*state).centre, std::ptr::null(), 1);
         }
@@ -727,12 +728,24 @@ fn target(x: i32, y: i32, width: i32, scroll: i32, entries: usize, dpi: u32) -> 
     }
 }
 
+/// Tell the Top Bar how many notifications are unread.
+unsafe fn publish_unread(state: *mut State) {
+    unsafe {
+        let count = (*state).history.iter().filter(|entry| entry.unread).count();
+        let bar = FindWindowW(wide("MonolithTopBar").as_ptr(), null_mut());
+        if !bar.is_null() {
+            PostMessageW(bar, crate::top_bar::UNREAD, count, 0);
+        }
+    }
+}
+
 unsafe fn close_centre(hwnd: HWND, state: *mut State) {
     unsafe {
         ShowWindow(hwnd, SW_HIDE);
         for entry in &mut (*state).history {
             entry.unread = false;
         }
+        publish_unread(state);
     }
 }
 
@@ -901,6 +914,7 @@ unsafe extern "system" fn centre_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                     Target::Entry(index) => drop(history.remove(index)),
                     Target::Nothing => return 0,
                 }
+                publish_unread(state);
                 clamp_scroll(hwnd, state);
                 InvalidateRect(hwnd, std::ptr::null(), 1);
                 0

@@ -13,7 +13,7 @@ Foundation and the first native application are implemented. Desktop Experience 
 - `src/dock.rs` presents ordered, configurable Start menu pins and open windows on the primary display. The Dock handles live updates, minimisation, restoration and fullscreen suppression. Pins targeting an executable directly adopt that application's running group.
 - `src/taskbar.rs` supports an opt-in Dock mode inside the existing primary Explorer taskbar band. A separate process restores native visibility when the Dock exits, and the Dock restores it if the companion exits first.
 - `src/config.rs` validates TOML, preserves invalid files and supports a safe start.
-- `src/top_bar.rs` reserves primary-monitor work area with a native AppBar and displays the local date, clock and battery in a borderless strip. Fullscreen windows and maximised foreground windows whose custom frames extend into the strip hide the bar and its hosted Island until the strip is clear.
+- `src/top_bar.rs` reserves primary-monitor work area with a native AppBar and displays the local date, clock and battery in a borderless strip. Monochrome Segoe Fluent Icons buttons at its right end open Control Center and the Notification Centre. A blue dot marks unread notifications. Fullscreen windows and maximised foreground windows whose custom frames extend into the strip hide the bar and its hosted Island until the strip is clear.
 - `src/preview.rs` owns the on-demand DWM thumbnail shown when hovering a running Dock tile.
 - `src/icons.rs` extracts authentic Shell icons on a bounded worker and renders monochrome or original colours.
 - `src/media.rs` subscribes to Windows media sessions and handles supported transport actions on a bounded WinRT worker.

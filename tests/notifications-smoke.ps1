@@ -43,8 +43,18 @@ try {
   $xml.LoadXml('<toast><visual><binding template="ToastGeneric"><text>Build finished</text><text>monolith.exe passed validation.</text></binding></visual></toast>')
   [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\WindowsPowerShell\v1.0\powershell.exe').Show([Windows.UI.Notifications.ToastNotification]::new($xml))
   Wait-Until { [DesktopSmoke]::FindVisibleForProcess('MonolithNotification', [uint32]$p.Id) -ne [IntPtr]::Zero } 'The second banner did not appear.' 5
-  $launcherWindow = [DesktopSmoke]::FindClass('MonolithSpotlight')
-  [void][DesktopSmoke]::Post($launcherWindow, 0x801F, [UIntPtr]::Zero, [IntPtr]::Zero)
+  $bar = [DesktopSmoke]::FindVisibleForProcess('MonolithTopBar', [uint32]$p.Id)
+  $bell = [DesktopSmoke]::FindWindowEx($bar, [IntPtr]::Zero, 'Button', 'Notifications')
+  if ($bell -eq [IntPtr]::Zero) { throw 'The Top Bar has no Notifications button.' }
+  if ($capturePath) {
+    Start-Sleep -Milliseconds 200
+    $t = [DesktopSmoke]::Bounds($bar)
+    $statusCapture = [IO.Path]::ChangeExtension([IO.Path]::GetFullPath($capturePath), '.status.png')
+    $bmp = [Drawing.Bitmap]::new(320, [Math]::Min($t[3] - $t[1], 40)); $g = [Drawing.Graphics]::FromImage($bmp)
+    $g.CopyFromScreen($t[2] - 320, $t[1], 0, 0, $bmp.Size); $bmp.Save($statusCapture); $g.Dispose(); $bmp.Dispose()
+  }
+  # BM_CLICK goes only to Monolith's own button; no global input is sent.
+  [void][DesktopSmoke]::Post($bell, 0x00F5, [UIntPtr]::Zero, [IntPtr]::Zero)
   Wait-Until { [DesktopSmoke]::FindVisibleForProcess('MonolithNotificationCentre', [uint32]$p.Id) -ne [IntPtr]::Zero } 'The Notification Centre did not open.'
   $centre = [DesktopSmoke]::FindVisibleForProcess('MonolithNotificationCentre', [uint32]$p.Id)
   $c = [DesktopSmoke]::Bounds($centre); "centre bounds: $($c -join ',')"

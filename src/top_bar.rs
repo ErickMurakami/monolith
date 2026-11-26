@@ -16,6 +16,7 @@ use windows_sys::Win32::{
     },
     UI::{
         Accessibility::*,
+        Controls::{DRAWITEMSTRUCT, ODS_SELECTED},
         HiDpi::{GetDpiForWindow, GetSystemMetricsForDpi},
         Shell::*,
         WindowsAndMessaging::*,
@@ -25,6 +26,13 @@ use windows_sys::Win32::{
 const CLOCK: usize = 1;
 const LAYOUT: usize = 2;
 const APPBAR_NOTIFICATION: u32 = WM_APP + 20;
+/// Posted by the notification surface with the unread count in `wParam`.
+pub const UNREAD: u32 = WM_APP + 32;
+const CONTROL_BUTTON: usize = 10;
+const BELL_BUTTON: usize = 11;
+// Segoe Fluent Icons code points for quick-settings sliders and the bell.
+const CONTROL_GLYPH: &str = "\u{E9E9}";
+const BELL_GLYPH: &str = "\u{EA8F}";
 
 thread_local! {
     static BAR_WINDOW: Cell<HWND> = const { Cell::new(null_mut()) };
@@ -41,6 +49,10 @@ pub struct TopBar {
 struct State {
     launcher: HWND,
     status: HWND,
+    /// Control Center and Notification Centre access, at the right end.
+    buttons: [HWND; 2],
+    icon_font: HFONT,
+    unread: usize,
     palette: Palette,
     portuguese: bool,
     brush: HBRUSH,
@@ -104,6 +116,9 @@ impl TopBar {
                     portuguese,
                     brush: CreateSolidBrush(palette.background),
                     status: null_mut(),
+                    buttons: [null_mut(); 2],
+                    icon_font: null_mut(),
+                    unread: 0,
                     font: null_mut(),
                     dpi: 0,
                     registered: false,
@@ -135,6 +150,36 @@ impl TopBar {
                 return Err(io::Error::last_os_error());
             }
             bar.state.status = status;
+            let labels = if portuguese {
+                ["Central de Controle", "Notificações"]
+            } else {
+                ["Control Center", "Notifications"]
+            };
+            for (index, (id, label)) in [CONTROL_BUTTON, BELL_BUTTON]
+                .into_iter()
+                .zip(labels)
+                .enumerate()
+            {
+                // The caption is the accessible name; the glyph is owner-drawn.
+                let button = CreateWindowExW(
+                    0,
+                    wide("BUTTON").as_ptr(),
+                    wide(label).as_ptr(),
+                    WS_CHILD | WS_VISIBLE | BS_OWNERDRAW as u32,
+                    0,
+                    0,
+                    0,
+                    0,
+                    hwnd,
+                    id as _,
+                    instance,
+                    null_mut(),
+                );
+                if button.is_null() {
+                    return Err(io::Error::last_os_error());
+                }
+                bar.state.buttons[index] = button;
+            }
             let state = &raw mut *bar.state;
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, state as isize);
             BAR_WINDOW.set(hwnd);
@@ -183,6 +228,7 @@ impl Drop for TopBar {
             DestroyWindow(self.hwnd);
             DeleteObject(self.state.brush);
             DeleteObject(self.state.font);
+            DeleteObject(self.state.icon_font);
         }
     }
 }
@@ -344,11 +390,31 @@ unsafe fn place(hwnd: HWND, state: *mut State) {
                 0,
                 wide("Segoe UI").as_ptr(),
             );
+            let icon_font = CreateFontW(
+                -scale(14),
+                0,
+                0,
+                0,
+                FW_NORMAL as i32,
+                0,
+                0,
+                0,
+                1,
+                0,
+                0,
+                0,
+                0,
+                wide("Segoe Fluent Icons").as_ptr(),
+            );
             if !font.is_null() {
                 SendMessageW((*state).status, WM_SETFONT, font as usize, 0);
                 DeleteObject((*state).font);
                 (*state).font = font;
                 (*state).dpi = dpi;
+            }
+            if !icon_font.is_null() {
+                DeleteObject((*state).icon_font);
+                (*state).icon_font = icon_font;
             }
         }
         let inset = scale(8);
@@ -365,14 +431,26 @@ unsafe fn place(hwnd: HWND, state: *mut State) {
             }
             (*state).region_size = Some((width, strip_height));
         }
+        let button_width = scale(30);
+        let buttons_left = width - inset - 2 * button_width;
         MoveWindow(
             (*state).status,
             inset,
             0,
-            (width - 2 * inset).max(1),
+            (buttons_left - scale(6) - inset).max(1),
             strip_height,
             0,
         );
+        for (index, &button) in (*state).buttons.iter().enumerate() {
+            MoveWindow(
+                button,
+                buttons_left + index as i32 * button_width,
+                0,
+                button_width,
+                strip_height,
+                0,
+            );
+        }
         let was_visible = IsWindowVisible(hwnd) != 0;
         let mut previous = RECT::default();
         let needs_position = !was_visible
@@ -450,6 +528,52 @@ unsafe fn refresh_status(hwnd: HWND, state: *mut State) {
     }
 }
 
+unsafe fn draw_button(state: *mut State, item: &DRAWITEMSTRUCT) {
+    unsafe {
+        let palette = (*state).palette;
+        let pressed = item.itemState & ODS_SELECTED != 0;
+        let area = item.rcItem;
+        overlay::fill(
+            item.hDC,
+            &area,
+            if pressed {
+                palette.pressed
+            } else {
+                palette.background
+            },
+        );
+        let saved = SaveDC(item.hDC);
+        SelectObject(item.hDC, (*state).icon_font);
+        SetBkMode(item.hDC, TRANSPARENT as i32);
+        SetTextColor(item.hDC, palette.text);
+        let bell = item.CtlID as usize == BELL_BUTTON;
+        let mut glyph: Vec<u16> = if bell { BELL_GLYPH } else { CONTROL_GLYPH }
+            .encode_utf16()
+            .collect();
+        let mut bounds = area;
+        DrawTextW(
+            item.hDC,
+            glyph.as_mut_ptr(),
+            glyph.len() as i32,
+            &mut bounds,
+            DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
+        );
+        if bell && (*state).unread > 0 {
+            // A small blue dot marks unread notifications.
+            let size = overlay::scale(5, (*state).dpi);
+            let centre = area.left + (area.right - area.left) / 2;
+            let dot = RECT {
+                left: centre + size,
+                top: area.top + overlay::scale(5, (*state).dpi),
+                right: centre + 2 * size,
+                bottom: area.top + overlay::scale(5, (*state).dpi) + size,
+            };
+            overlay::fill(item.hDC, &dot, palette.accent);
+        }
+        RestoreDC(item.hDC, saved);
+    }
+}
+
 unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     unsafe {
         let state = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut State;
@@ -518,6 +642,25 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                 let mut rect = RECT::default();
                 GetClientRect(hwnd, &mut rect);
                 FillRect(wp as HDC, &rect, (*state).brush);
+                1
+            }
+            WM_COMMAND if (wp >> 16) as u32 == BN_CLICKED => {
+                // The click gives this process the foreground rights the panels need.
+                let target = match wp & 0xffff {
+                    CONTROL_BUTTON => crate::control_center::OPEN,
+                    BELL_BUTTON => crate::notifications::OPEN,
+                    _ => return 0,
+                };
+                PostMessageW((*state).launcher, target, hwnd as usize, 0);
+                0
+            }
+            UNREAD => {
+                (*state).unread = wp;
+                InvalidateRect((*state).buttons[1], std::ptr::null(), 0);
+                0
+            }
+            WM_DRAWITEM if lp != 0 => {
+                draw_button(state, &*(lp as *const DRAWITEMSTRUCT));
                 1
             }
             WM_CTLCOLORSTATIC => {
