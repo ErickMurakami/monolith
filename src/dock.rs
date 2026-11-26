@@ -2,7 +2,7 @@
 
 use crate::{
     config::{self, DockMonitor},
-    desktop::{self, WindowGroup},
+    desktop::{self, AppIdentity, WindowGroup},
     icons,
     overlay::{self, Palette},
     preview::{self, Preview},
@@ -10,7 +10,18 @@ use crate::{
     taskbar::{self, Lease, Placement},
     windows::{launch_shortcut, report_for, shell_menu, wide},
 };
-use std::{cell::Cell, ffi::c_void, io, mem::size_of, path::PathBuf, ptr::null_mut, rc::Rc};
+use std::{
+    cell::Cell,
+    collections::HashMap,
+    ffi::c_void,
+    io,
+    mem::size_of,
+    path::PathBuf,
+    ptr::null_mut,
+    rc::Rc,
+    sync::mpsc::{self, Receiver},
+    thread,
+};
 use windows_sys::Win32::{
     Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
     Graphics::Gdi::*,
@@ -36,6 +47,7 @@ const SPOTLIGHT: u32 = 1;
 const EXIT: u32 = 2;
 const FIRST_WINDOW: u32 = 10;
 const CAPACITY: usize = 8;
+const PINS_READY: u32 = WM_APP + 22;
 
 thread_local! {
     static EVENT_TARGET: Cell<HWND> = const { Cell::new(null_mut()) };
@@ -70,6 +82,11 @@ struct State {
     groups: Vec<WindowGroup>,
     inventory: Option<Rc<desktop::Snapshot>>,
     pins: Vec<App>,
+    /// Executables launched by pins, keyed by shortcut path once the worker reports.
+    pin_targets: HashMap<PathBuf, AppIdentity>,
+    pin_resolver: Option<Receiver<HashMap<PathBuf, AppIdentity>>>,
+    /// Running groups adopted by the visible pins, in pin order.
+    pin_groups: Vec<Option<WindowGroup>>,
     order_path: PathBuf,
     drag: Option<PinDrag>,
     visible_pins: usize,
@@ -94,6 +111,9 @@ struct State {
 impl State {
     fn live_group(&self, id: u32) -> Option<&WindowGroup> {
         let tile = id.checked_sub(FIRST_WINDOW)? as usize;
+        if tile < self.visible_pins {
+            return self.pin_groups.get(tile)?.as_ref();
+        }
         self.groups.get(tile.checked_sub(self.visible_pins)?)
     }
 
@@ -169,6 +189,9 @@ impl Dock {
                     groups: Vec::new(),
                     inventory: None,
                     pins: settings.pins,
+                    pin_targets: HashMap::new(),
+                    pin_resolver: None,
+                    pin_groups: Vec::new(),
                     order_path: settings.order_path,
                     drag: None,
                     visible_pins: 0,
@@ -258,6 +281,7 @@ impl Dock {
                 }
                 dock.hooks.push(hook);
             }
+            resolve_pins(handle, state);
             refresh(handle, state);
             Ok(dock)
         }
@@ -461,6 +485,53 @@ unsafe extern "system" fn dock_button(
     }
 }
 
+/// Resolve pin targets once on a worker STA. Pins work as launchers until it reports.
+unsafe fn resolve_pins(hwnd: HWND, state: *mut State) {
+    unsafe {
+        let paths: Vec<PathBuf> = (*state).pins.iter().map(|pin| pin.path.clone()).collect();
+        if paths.is_empty() {
+            return;
+        }
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let target = hwnd as usize;
+        let spawned = thread::Builder::new()
+            .name("monolith-dock-pins".into())
+            .spawn(move || {
+                use windows::Win32::System::Com::{
+                    COINIT_APARTMENTTHREADED, CoInitializeEx, CoUninitialize,
+                };
+                if CoInitializeEx(None, COINIT_APARTMENTTHREADED).is_err() {
+                    return;
+                }
+                let identities = desktop::shortcut_identities(&paths);
+                CoUninitialize();
+                if sender.send(identities).is_ok() {
+                    PostMessageW(target as HWND, PINS_READY, 0, 0);
+                }
+            });
+        if spawned.is_ok() {
+            (*state).pin_resolver = Some(receiver);
+        }
+    }
+}
+
+/// Move each visible pin's running group from the trailing tiles onto the pin.
+fn adopt_groups(
+    pins: &[App],
+    targets: &HashMap<PathBuf, AppIdentity>,
+    groups: &mut Vec<WindowGroup>,
+) -> Vec<Option<WindowGroup>> {
+    pins.iter()
+        .map(|pin| {
+            let identity = targets.get(&pin.path)?;
+            let index = groups
+                .iter()
+                .position(|group| group.identity.as_ref() == Some(identity))?;
+            Some(groups.remove(index))
+        })
+        .collect()
+}
+
 unsafe fn reorder_pins(hwnd: HWND, state: *mut State, from: usize, to: usize) {
     unsafe {
         let count = (*state).visible_pins;
@@ -598,6 +669,7 @@ unsafe fn refresh(hwnd: HWND, state: *mut State) {
         if desktop::foreground_covers_monitor(monitor, &display.rcMonitor) {
             ShowWindow(hwnd, SW_HIDE);
             (*state).groups.clear();
+            (*state).pin_groups.clear();
             (*state).inventory = None;
             if (*state).auto_hide {
                 (*state).expanded = false;
@@ -627,6 +699,7 @@ unsafe fn refresh(hwnd: HWND, state: *mut State) {
             }
             (*state).visible_pins = 0;
             (*state).groups.clear();
+            (*state).pin_groups.clear();
             (*state).inventory = None;
             let work = display.rcWork;
             let width = scale(120).min((work.right - work.left).max(1));
@@ -685,6 +758,11 @@ unsafe fn refresh(hwnd: HWND, state: *mut State) {
         (*state).inventory = inventory;
         let pin_count = (*state).pins.len().min(capacity);
         (*state).visible_pins = pin_count;
+        let adopted = {
+            let state = &*state;
+            adopt_groups(&state.pins[..pin_count], &state.pin_targets, &mut groups)
+        };
+        (*state).pin_groups = adopted;
         groups.truncate(capacity - pin_count);
         (*state).groups = groups;
         (&mut *state).request_icons();
@@ -821,21 +899,17 @@ unsafe fn draw(state: *mut State, item: &DRAWITEMSTRUCT) {
                 DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX,
             );
         }
-        let groups = &(*state).groups;
         let drop_target = pin_index(item.CtlID, (*state).visible_pins)
             .is_some_and(|index| (*state).drag.as_ref().and_then(|drag| drag.over) == Some(index));
-        if drop_target
-            || item
-                .CtlID
-                .checked_sub(FIRST_WINDOW)
-                .and_then(|index| (index as usize).checked_sub((*state).visible_pins))
-                .and_then(|index| groups.get(index))
-                .is_some_and(WindowGroup::active)
-        {
+        // Running tiles show a short activity dot; the active one and a drop target a wider bar.
+        let group = (&*state).live_group(item.CtlID);
+        if drop_target || group.is_some() {
+            let emphasised = drop_target || group.is_some_and(WindowGroup::active);
+            let half = overlay::scale(if emphasised { 5 } else { 2 }, (*state).dpi);
             let centre = area.left + (area.right - area.left) / 2;
             let indicator = RECT {
-                left: centre - 5,
-                right: centre + 5,
+                left: centre - half,
+                right: centre + half,
                 top: area.bottom - 2,
                 bottom: area.bottom,
             };
@@ -875,14 +949,13 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
                     }
                     FIRST_WINDOW.. => {
                         let index = (id - FIRST_WINDOW) as usize;
-                        if index < (*state).visible_pins {
+                        if index < (*state).visible_pins && (&*state).live_group(id).is_none() {
                             let pins = &(*state).pins;
                             let path = pins[index].path.clone();
                             launch_shortcut(hwnd, &path);
                             return 0;
                         }
-                        let groups = &(*state).groups;
-                        if let Some(group) = groups.get(index - (*state).visible_pins) {
+                        if let Some(group) = (&*state).live_group(id) {
                             (*state).menu_open = group.windows.len() > 1;
                             show_group(hwnd, lp as HWND, group);
                             if (*state).menu_open {
@@ -909,6 +982,14 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
                         tip.szText.len() as i32,
                     );
                     tip.lpszText = tip.szText.as_mut_ptr();
+                }
+                0
+            }
+            PINS_READY => {
+                if let Some(targets) = (*state).pin_resolver.take().and_then(|r| r.try_recv().ok())
+                {
+                    (*state).pin_targets = targets;
+                    schedule_refresh(hwnd);
                 }
                 0
             }

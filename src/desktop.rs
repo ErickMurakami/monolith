@@ -45,7 +45,7 @@ pub struct Snapshot {
 }
 
 #[derive(Clone, PartialEq, Eq, Hash)]
-enum AppIdentity {
+pub enum AppIdentity {
     Packaged(String),
     Executable(String),
 }
@@ -53,6 +53,8 @@ enum AppIdentity {
 pub struct WindowGroup {
     pub windows: Vec<Rc<Window>>,
     pub icon_path: Option<PathBuf>,
+    /// Absent for shared hosts and processes whose metadata is inaccessible.
+    pub identity: Option<AppIdentity>,
 }
 
 impl WindowGroup {
@@ -87,6 +89,7 @@ pub fn group_windows(mut windows: Vec<Rc<Window>>) -> Vec<WindowGroup> {
             groups.push(WindowGroup {
                 windows: vec![window],
                 icon_path: None,
+                identity: None,
             });
             continue;
         };
@@ -94,6 +97,7 @@ pub fn group_windows(mut windows: Vec<Rc<Window>>) -> Vec<WindowGroup> {
             groups.push(WindowGroup {
                 windows: Vec::new(),
                 icon_path: icon_path.clone(),
+                identity: Some(app.clone()),
             });
             groups.len() - 1
         });
@@ -438,5 +442,82 @@ mod tests {
         };
         assert!(!matches_display(&spanning, &display));
         assert!(!matches_display(&RECT::default(), &display));
+    }
+}
+
+/// Resolve the executable each Start menu shortcut launches so a running group can
+/// adopt its pin. Call on a worker STA: loading a link reads only the `.lnk` file and
+/// neither resolves a missing target nor searches the filesystem.
+pub fn shortcut_identities(paths: &[PathBuf]) -> HashMap<PathBuf, AppIdentity> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows::{
+        Win32::{
+            System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance, IPersistFile, STGM_READ},
+            UI::Shell::{IShellLinkW, SLGP_UNCPRIORITY, ShellLink},
+        },
+        core::{Interface, PCWSTR},
+    };
+    let mut identities = HashMap::new();
+    let mut target = vec![0_u16; 32_768];
+    for path in paths {
+        let wide: Vec<u16> = path.as_os_str().encode_wide().chain([0]).collect();
+        let resolved = unsafe {
+            CoCreateInstance::<_, IShellLinkW>(&ShellLink, None, CLSCTX_INPROC_SERVER).and_then(
+                |link| {
+                    link.cast::<IPersistFile>()?
+                        .Load(PCWSTR(wide.as_ptr()), STGM_READ)?;
+                    target.fill(0);
+                    link.GetPath(&mut target, null_mut(), SLGP_UNCPRIORITY.0 as u32)?;
+                    Ok(())
+                },
+            )
+        };
+        if resolved.is_err() {
+            continue;
+        }
+        let length = target.iter().position(|&unit| unit == 0).unwrap_or(0);
+        if let Some(identity) = shortcut_identity(&String::from_utf16_lossy(&target[..length])) {
+            identities.insert(path.clone(), identity);
+        }
+    }
+    identities
+}
+
+/// Only direct executable targets identify an application. Launchers that start a
+/// different image, and links to documents or folders, keep their pin independent.
+fn shortcut_identity(target: &str) -> Option<AppIdentity> {
+    let identity = target.trim().to_lowercase();
+    let name = identity.rsplit('\\').next()?;
+    (name.ends_with(".exe")
+        && !matches!(
+            name,
+            "applicationframehost.exe" | "wwahost.exe" | "explorer.exe" | "cmd.exe"
+        )
+        && identity.contains(":\\"))
+    .then_some(AppIdentity::Executable(identity))
+}
+
+#[cfg(test)]
+mod shortcut_tests {
+    use super::*;
+
+    #[test]
+    fn adopts_only_direct_executable_targets() {
+        assert!(
+            shortcut_identity(r"C:\Program Files\JetBrains\IntelliJ IDEA\bin\idea64.exe")
+                == Some(AppIdentity::Executable(
+                    r"c:\program files\jetbrains\intellij idea\bin\idea64.exe".into()
+                ))
+        );
+        for target in [
+            "",
+            r"C:\Users\Example\Documents\notes.txt",
+            r"C:\Windows\explorer.exe",
+            r"C:\Windows\System32\cmd.exe",
+            r"C:\Projects",
+            "idea64.exe",
+        ] {
+            assert!(shortcut_identity(target).is_none(), "adopted {target}");
+        }
     }
 }

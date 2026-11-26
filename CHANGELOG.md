@@ -32,4 +32,5 @@
 - Reserved native work area for the Top Bar so maximised window captions stay accessible, and added the local date.
 - Added Files copy, cut and paste through the Windows clipboard and Shell, with collision-safe naming and cancellation requests.
 - Added recycling from Files through the Windows Shell, without a permanent deletion path.
+- Pinned Dock tiles adopt their running application windows and show running indicators.
 - Added an experimental Dock taskbar replacement mode with session-only visibility and native recovery.

@@ -59,7 +59,7 @@ top_bar = false            # set true to opt in
 island = false             # set true to opt in
 ```
 
-Pins are resolved from local Start menu shortcuts. Missing and repeated names are skipped. Pins take the first available slots in the Dock. Drag a pin onto another pin to reorder it. The order is saved in `dock-order.toml` next to the configuration and takes precedence over the list. Remove the order file to restore configuration order. Windows Shell icons are monochrome by default, with names available through native tooltips and accessibility. A tile uses its text label when the Shell cannot supply an icon.
+Pins are resolved from local Start menu shortcuts. Missing and repeated names are skipped. Pins take the first available slots in the Dock. Drag a pin onto another pin to reorder it. The order is saved in `dock-order.toml` next to the configuration and takes precedence over the list. Remove the order file to restore configuration order. Windows Shell icons are monochrome by default, with names available through native tooltips and accessibility. A tile uses its text label when the Shell cannot supply an icon. A pin whose shortcut directly targets an executable adopts that application's running windows: clicking it switches to, minimises or chooses among them instead of starting another instance, and a small blue indicator marks it as running. Launcher stubs, packaged apps and shortcuts to documents keep their pin as a launcher beside a separate running tile.
 
 Invalid settings are preserved on disk and defaults are loaded. Rename the file to restore defaults on the next start.
 

@@ -10,7 +10,7 @@ Foundation and the first native application are implemented. Desktop Experience 
 - `src/search.rs` discovers Start menu desktop shortcuts and ranks local matches.
 - `src/calculator.rs` evaluates bounded arithmetic expressions entered in Spotlight.
 - `src/desktop.rs` discovers eligible windows and their display, detects fullscreen geometry and switches on explicit selection.
-- `src/dock.rs` presents ordered, configurable Start menu pins and open windows on the primary display. The Dock handles live updates, minimisation, restoration and fullscreen suppression.
+- `src/dock.rs` presents ordered, configurable Start menu pins and open windows on the primary display. The Dock handles live updates, minimisation, restoration and fullscreen suppression. Pins targeting an executable directly adopt that application's running group.
 - `src/taskbar.rs` supports an opt-in Dock mode inside the existing primary Explorer taskbar band. A separate process restores native visibility when the Dock exits, and the Dock restores it if the companion exits first.
 - `src/config.rs` validates TOML, preserves invalid files and supports a safe start.
 - `src/top_bar.rs` reserves primary-monitor work area with a native AppBar and displays the local date, clock and battery in a borderless strip. Fullscreen windows and maximised foreground windows whose custom frames extend into the strip hide the bar and its hosted Island until the strip is clear.
@@ -72,6 +72,8 @@ On Windows 11 26H2 build 26300.9974, `tests/files-change-smoke.ps1` verified the
 
 On build 26300.9974, recycling from the running release build was verified with key messages posted to the Files list: Delete recycled only the focused Unicode-named item in 99 ms, the item appeared in the Windows Recycle Bin under its original folder, and the Shell `undelete` verb restored its contents. The native `file_recycle` test, ignored by default, recycled and restored a unique fixture through the returned Shell item. Formatting, strict Clippy, 35 unit tests and the locked release build passed. The keystroke-driven `files-change-smoke.ps1` gained the same recycling step but was not run end to end: another application held the foreground, and the test is not run unattended while the desktop is in use. Network, WSL and removable volumes are rejected before any Shell call. Live rejection from a full or disabled Recycle Bin remains untested.
 
+With an isolated profile on build 26300.9974, a check driven only by posted messages verified Dock pin adoption against a real WinForms window hosted by `powershell.exe`. Without a pin, the window had its own tile. With a pinned Start menu shortcut to the same executable, the separate tile disappeared, and a posted click on the pin toggled the existing window instead of starting another instance. Formatting, strict Clippy and 36 unit tests passed. Visual confirmation of the running indicator, adoption across native workspace switches and the mouse-driven `desktop-smoke.ps1 -Pins` run remain pending; those mouse-driven checks were not run while the desktop was in use.
+
 Checked the declared licences of all locked dependencies, including the added Windows Runtime bindings. Cargo Audit passed with warnings denied across 31 lockfile entries.
 
 ## Measurements
@@ -106,4 +108,4 @@ Ctrl+Alt+Space remains the temporary binding on build 26300.9974. The isolated W
 
 ## Next task
 
-Make pinned Dock tiles adopt verified running application groups and preserve interaction when switching native workspaces. Continue combined Win+Space first-key delivery, stable workspace identity, dedicated application placement and physical gesture validation. Files recycling is complete; remaining Files work covers mid-transfer cancellation, cross-volume moves and live WSL or UNC transfers.
+Verify that Dock interaction is preserved when switching native workspaces, then Continue combined Win+Space first-key delivery, stable workspace identity, dedicated application placement and physical gesture validation. Files recycling is complete; remaining Files work covers mid-transfer cancellation, cross-volume moves and live WSL or UNC transfers.
