@@ -11,6 +11,7 @@ use std::{
 pub struct Config {
     pub theme: Theme,
     pub language: Language,
+    pub files_ide: Option<std::path::PathBuf>,
     pub shortcut: Shortcut,
     // Accept configuration written during the short-lived override trial.
     #[serde(rename = "win_space_override")]

@@ -33,6 +33,8 @@ Press Space on a file or folder in the list to open Quick Look. It shows common 
 
 Select **Show Git** or press Ctrl+G to see the current branch, locally known upstream counts, and staged, modified, untracked or conflicted items. Folder rows summarise changes within them. The view uses an installed Git for Windows and refreshes on navigation or F5. Git status starts off in each Files window.
 
+Use **Open terminal here** in the Files context menu to start a terminal in the displayed directory. Monolith uses Windows Terminal when its alias is available and uses Windows PowerShell as the fallback. Set `files_ide` to the absolute path of a local IDE executable to show **Open in configured IDE**. It opens the selected folder, or the displayed directory when a folder is unavailable in the selection.
+
 Monolith tries Win+Space first and uses Ctrl+Alt+Space as a temporary fallback when Windows reserves the preferred chord. With `--resident`, pressing the registered shortcut again dismisses Spotlight. Escape returns focus to the previous window when Windows permits it. Safe mode disables global shortcuts.
 
 Monolith reads `%LOCALAPPDATA%\Monolith\config.toml` at startup.
@@ -40,6 +42,7 @@ Monolith reads `%LOCALAPPDATA%\Monolith\config.toml` at startup.
 ```toml
 theme = "dark"              # dark, light
 language = "english"        # english, portuguese
+# files_ide = 'C:\Tools\IDE.exe'
 shortcut = "ctrl-alt-space" # win-space, ctrl-alt-space, disabled
 dock = false               # set true to opt in
 dock_pins = ["Visual Studio Code"] # exact Start menu shortcut names, in display order

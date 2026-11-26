@@ -194,7 +194,7 @@ pub fn run() -> io::Result<()> {
                 .get(index + 1)
                 .filter(|value| !value.as_encoded_bytes().starts_with(b"--"))
                 .map(PathBuf::from);
-            return files::run(folder, palette, portuguese);
+            return files::run(folder, palette, portuguese, settings.files_ide);
         }
         let instance = GetModuleHandleW(std::ptr::null());
         let class_name = wide("MonolithSpotlight");

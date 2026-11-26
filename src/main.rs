@@ -19,6 +19,8 @@ mod file_changes;
 #[cfg(windows)]
 mod file_git;
 #[cfg(windows)]
+mod file_launch;
+#[cfg(windows)]
 mod files;
 #[cfg(windows)]
 mod files_directory;

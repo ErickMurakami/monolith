@@ -3,6 +3,7 @@
 use crate::{
     file_changes::{self, Change, Outcome},
     file_git::{self, Branch, ItemStatus},
+    file_launch::{self, Tool},
     files_directory::{self, Listing, Move, Navigation, Reader},
     overlay::{self, Palette},
     quick_look::{self, QuickLook},
@@ -79,6 +80,8 @@ struct State {
     git_revision: u64,
     git: Option<file_git::Status>,
     git_job: Option<GitJob>,
+    ide: Option<PathBuf>,
+    external: Option<Receiver<io::Result<()>>>,
     navigation: Navigation,
     listing: Listing,
     listing_generation: u64,
@@ -138,7 +141,12 @@ fn known_folder(folder: &GUID) -> Option<PathBuf> {
     }
 }
 
-pub fn run(initial: Option<PathBuf>, palette: Palette, portuguese: bool) -> io::Result<()> {
+pub fn run(
+    initial: Option<PathBuf>,
+    palette: Palette,
+    portuguese: bool,
+    ide: Option<PathBuf>,
+) -> io::Result<()> {
     unsafe {
         let instance = GetModuleHandleW(std::ptr::null());
         let name = wide("MonolithFiles");
@@ -199,6 +207,8 @@ pub fn run(initial: Option<PathBuf>, palette: Palette, portuguese: bool) -> io::
             git_revision: 0,
             git: None,
             git_job: None,
+            ide: file_launch::configured_ide(ide),
+            external: None,
             navigation: Navigation::default(),
             requested: None,
             listing: Listing::default(),
@@ -1073,14 +1083,37 @@ unsafe fn list_menu(hwnd: HWND, state: *mut State, origin: HWND, lp: LPARAM) {
             return;
         }
         let item_state = if row < 0 { MF_GRAYED } else { MF_ENABLED };
+        let folder_state = if (*state).navigation.current().is_some() {
+            MF_ENABLED
+        } else {
+            MF_GRAYED
+        };
         for (id, label, flags) in [
             (1, (*state).label("Open", "Abrir"), item_state),
             (2, "Quick Look", item_state),
             (3, (*state).label("Rename…", "Renomear…"), item_state),
-            (4, (*state).label("New folder…", "Nova pasta…"), MF_ENABLED),
+            (
+                5,
+                (*state).label("Open terminal here", "Abrir terminal aqui"),
+                folder_state,
+            ),
         ] {
             AppendMenuW(menu, MF_STRING | flags, id, wide(label).as_ptr());
         }
+        if (*state).ide.is_some() {
+            AppendMenuW(
+                menu,
+                MF_STRING | folder_state,
+                6,
+                wide((*state).label("Open in configured IDE", "Abrir na IDE configurada")).as_ptr(),
+            );
+        }
+        AppendMenuW(
+            menu,
+            MF_STRING | folder_state,
+            4,
+            wide((*state).label("New folder…", "Nova pasta…")).as_ptr(),
+        );
         let selected = TrackPopupMenuEx(
             menu,
             TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON,
@@ -1098,8 +1131,50 @@ unsafe fn list_menu(hwnd: HWND, state: *mut State, origin: HWND, lp: LPARAM) {
             2 => preview(hwnd, state, row),
             3 => begin_name_edit(hwnd, state, Some(row)),
             4 => begin_name_edit(hwnd, state, None),
+            5 => launch_tool(hwnd, state, Tool::Terminal, -1),
+            6 => {
+                if let Some(executable) = (*state).ide.clone() {
+                    launch_tool(hwnd, state, Tool::Ide(executable), row);
+                }
+            }
             _ => {}
         }
+    }
+}
+
+unsafe fn launch_tool(hwnd: HWND, state: *mut State, tool: Tool, row: i32) {
+    unsafe {
+        if (*state).external.is_some() {
+            return;
+        }
+        let Some(current) = (*state).navigation.current() else {
+            return;
+        };
+        let entries = &(*state).listing.entries;
+        let folder = entries
+            .get(row as usize)
+            .filter(|entry| entry.directory)
+            .map_or_else(|| current.to_owned(), |entry| current.join(&entry.name));
+        match file_launch::start(hwnd, tool, folder) {
+            Ok(receive) => (*state).external = Some(receive),
+            Err(error) => launch_error(hwnd, state, &error),
+        }
+    }
+}
+
+unsafe fn launch_error(hwnd: HWND, state: *mut State, error: &io::Error) {
+    unsafe {
+        set_text(
+            hwnd,
+            STATUS,
+            &format!(
+                "{} · {error}",
+                (*state).label(
+                    "Could not launch the tool",
+                    "Não foi possível abrir a ferramenta"
+                )
+            ),
+        );
     }
 }
 
@@ -1272,6 +1347,14 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
             return DefWindowProcW(hwnd, msg, wp, lp);
         }
         match msg {
+            file_launch::READY => {
+                if let Some(receive) = (*state).external.take()
+                    && let Ok(Err(error)) = receive.try_recv()
+                {
+                    launch_error(hwnd, state, &error);
+                }
+                0
+            }
             GIT_READY => {
                 finish_git(hwnd, state);
                 0
