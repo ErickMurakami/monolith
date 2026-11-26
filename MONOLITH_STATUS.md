@@ -23,6 +23,7 @@ Foundation and the first native application are implemented. Desktop Experience 
 - `src/files.rs` owns a native, on-demand Files window with a custom title surface, virtualised navigation, standard Windows folders and default app activation. `src/files_directory.rs` loads directories off the GUI thread and preserves history on failures.
 - `src/quick_look.rs` opens a borderless text, image, PDF or metadata preview on Space in Files. `src/quick_content.rs` bounds reads and pixel counts and uses platform decoders.
 - `src/file_changes.rs` performs same-directory rename and folder creation without overwriting an existing destination.
+- `src/file_git.rs` provides opt-in branch, locally known upstream and file status through a bounded, read-only Git worker.
 - `benchmarks/measure.ps1` samples Windows and Monolith memory, CPU and I/O.
 - The benchmark also records the busiest GPU engine from WDDM counters when available.
 - `docs/spotlight.png` shows a calculation in the running borderless Spotlight release build.
@@ -33,6 +34,7 @@ Foundation and the first native application are implemented. Desktop Experience 
 - `docs/mission.png` shows a cropped capture of two real DWM thumbnails for verification windows.
 - `docs/files.png` shows the real directory list and standard-folder actions with verification files.
 - `docs/quick-look.png` shows the native preview rendering a verification PNG.
+- `docs/files-git.png` shows the branch and item states of a real verification repository.
 
 The Dock groups running windows by packaged application ID or verified process image, opens a native window chooser and previews the active or first visible window in a group. It can follow the active display, retract to a pointer reveal strip and show native Shell icons for pins and running groups. The Island shows title, artist, artwork, available transport controls and progress from the Windows timeline. Simultaneous per-display Docks, additional Top Bar modules, media and Android integrations for Control Center, workspaces, Files previews and operations, indexing, tuning, settings UI, Android integration and installers are pending.
 
@@ -51,6 +53,8 @@ The media smoke test used an isolated local Helium profile and real Windows medi
 `tests/quick-look-smoke.ps1` verified folder details, literal Markdown, genuine PNG and PDF pixels, handling of malformed and oversized inputs, keyboard dismissal and shutdown with an open preview. Twenty-two unit tests passed. The live PNG capture was visually reviewed.
 
 On Windows 11 26H2 build 26300.9974, `tests/files-change-smoke.ps1` verified the Files changes in `3e98417`, including rejection of a reserved name, preservation of the existing file during a conflict, Unicode and case-only rename, folder creation, and cancellation. `tests/workspace-navigation-smoke.ps1` verified directional switching through native desktop membership, a boundary without wrap and restoration of the original desktop.
+
+`tests/files-git-smoke.ps1` verified that Git starts off, reports the real branch when enabled, preserves the index, and refreshes across navigation. The native backend tests covered linked worktrees, detached and unborn branches, conflicts, Unicode paths and prevention of repository-configured subprocess filters. Twenty-six unit tests passed. The Git view skips submodule comparisons, and queries that require an external filter report unavailable.
 
 Checked the declared licences of all locked dependencies, including the added Windows Runtime bindings. Cargo Audit passed with warnings denied across 31 lockfile entries.
 
@@ -84,4 +88,4 @@ Ctrl+Alt+Space remains the temporary binding on build 26300.9974. The isolated W
 
 ## Next task
 
-Wire the bounded read-only Git status backend into Files. Continue investigating combined Win+Space first-key delivery, stable workspace identity, dedicated application placement, physical gestures and crash-safe taskbar restoration independently.
+Add Files actions to open a terminal in the current directory and a project in a configured IDE. Continue investigating combined Win+Space first-key delivery, stable workspace identity, dedicated application placement, physical gestures and crash-safe taskbar restoration independently.

@@ -27,3 +27,4 @@
 - Added native Quick Look for text, Markdown, images, first-page PDF previews and basic item details.
 - Added Files rename and folder creation with native collision handling.
 - Added directional switching between existing Windows desktops in Mission Control.
+- Added on-demand Git branch, upstream and file status in Monolith Files.

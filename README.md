@@ -31,6 +31,8 @@ Launch with `--files` or select **Files** from a shell context menu. Pass a fold
 
 Press Space on a file or folder in the list to open Quick Look. It shows common image formats, the first PDF page, UTF-8 or UTF-16 text and basic item details. Markdown and source files are displayed as literal text. Press Space or Escape to return to the list.
 
+Select **Show Git** or press Ctrl+G to see the current branch, locally known upstream counts, and staged, modified, untracked or conflicted items. Folder rows summarise changes within them. The view uses an installed Git for Windows and refreshes on navigation or F5. Git status starts off in each Files window.
+
 Monolith tries Win+Space first and uses Ctrl+Alt+Space as a temporary fallback when Windows reserves the preferred chord. With `--resident`, pressing the registered shortcut again dismisses Spotlight. Escape returns focus to the previous window when Windows permits it. Safe mode disables global shortcuts.
 
 Monolith reads `%LOCALAPPDATA%\Monolith\config.toml` at startup.
@@ -79,3 +81,5 @@ See [project status](MONOLITH_STATUS.md) and [benchmark procedure](benchmarks/RE
 ![Monolith Files showing a verification folder and the standard folder shortcuts](docs/files.png)
 
 ![Quick Look rendering a local PNG in the native preview window](docs/quick-look.png)
+
+![Files showing the branch and item states for a verification repository](docs/files-git.png)

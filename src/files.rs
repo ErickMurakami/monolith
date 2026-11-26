@@ -2,6 +2,7 @@
 
 use crate::{
     file_changes::{self, Change, Outcome},
+    file_git::{self, Branch, ItemStatus},
     files_directory::{self, Listing, Move, Navigation, Reader},
     overlay::{self, Palette},
     quick_look::{self, QuickLook},
@@ -14,7 +15,12 @@ use std::{
     os::windows::ffi::{OsStrExt, OsStringExt},
     path::{Path, PathBuf},
     ptr::null_mut,
-    sync::{Arc, atomic::AtomicBool, mpsc::Receiver},
+    sync::{
+        Arc,
+        atomic::AtomicBool,
+        mpsc::{self, Receiver},
+    },
+    thread,
 };
 use windows_sys::{
     Win32::{
@@ -52,6 +58,9 @@ const HIDDEN: usize = 11;
 const NAME_EDIT: usize = 12;
 const APPLY_NAME: usize = 13;
 const CANCEL_NAME: usize = 14;
+const GIT_TOGGLE: usize = 15;
+const GIT_LABEL: usize = 16;
+const GIT_READY: u32 = WM_APP + 17;
 const FIRST_FAVOURITE: usize = 20;
 const FOLDERS: [(GUID, &str, &str); 4] = [
     (FOLDERID_Profile, "Home", "Início"),
@@ -66,6 +75,10 @@ struct State {
     preview_busy: Arc<AtomicBool>,
     name_edit: Option<(PathBuf, Change)>,
     change: Option<Receiver<Outcome>>,
+    git_enabled: bool,
+    git_revision: u64,
+    git: Option<file_git::Status>,
+    git_job: Option<GitJob>,
     navigation: Navigation,
     listing: Listing,
     listing_generation: u64,
@@ -78,6 +91,11 @@ struct State {
     surface: HBRUSH,
     font: HFONT,
     dpi: u32,
+}
+
+struct GitJob {
+    revision: u64,
+    result: Receiver<io::Result<Option<file_git::Status>>>,
 }
 
 impl State {
@@ -177,6 +195,10 @@ pub fn run(initial: Option<PathBuf>, palette: Palette, portuguese: bool) -> io::
             preview_busy: Arc::default(),
             name_edit: None,
             change: None,
+            git_enabled: false,
+            git_revision: 0,
+            git: None,
+            git_job: None,
             navigation: Navigation::default(),
             requested: None,
             listing: Listing::default(),
@@ -296,6 +318,7 @@ unsafe fn initialise(
         for (index, heading) in [
             (*state).label("Name", "Nome"),
             (*state).label("Kind", "Tipo"),
+            "Git",
         ]
         .into_iter()
         .enumerate()
@@ -319,6 +342,9 @@ unsafe fn initialise(
             );
         }
         button((*state).label("Show hidden", "Mostrar ocultos"), HIDDEN)?;
+        button((*state).label("Show Git", "Exibir Git"), GIT_TOGGLE)?;
+        let git = child(static_class.as_ptr(), "", SS_CENTERIMAGE, GIT_LABEL)?;
+        ShowWindow(git, SW_HIDE);
         let name = child(
             wide("EDIT").as_ptr(),
             "",
@@ -410,6 +436,7 @@ unsafe fn key(hwnd: HWND, state: *mut State, message: &MSG) -> bool {
                 SendMessageW(edit, EM_SETSEL, 0, -1);
             }
             VK_H if ctrl => action(hwnd, state, HIDDEN),
+            VK_G if ctrl => action(hwnd, state, GIT_TOGGLE),
             VK_F5 => refresh(hwnd, state),
             VK_RETURN if message.hwnd == edit => {
                 let length = GetWindowTextLengthW(edit);
@@ -484,7 +511,7 @@ unsafe fn layout(hwnd: HWND, state: *mut State) {
             );
             if !font.is_null() {
                 for id in
-                    (TITLE..=CANCEL_NAME).chain(FIRST_FAVOURITE..FIRST_FAVOURITE + FOLDERS.len())
+                    (TITLE..=GIT_LABEL).chain(FIRST_FAVOURITE..FIRST_FAVOURITE + FOLDERS.len())
                 {
                     SendMessageW(GetDlgItem(hwnd, id as i32), WM_SETFONT, font as usize, 0);
                 }
@@ -554,29 +581,35 @@ unsafe fn layout(hwnd: HWND, state: *mut State) {
             );
         }
         place(HIDDEN as i32, pad, scale(219), scale(128), scale(28));
+        place(GIT_TOGGLE as i32, pad, scale(252), scale(128), scale(28));
         let left = pad + scale(145);
         let list_width = (width - left - pad).max(1);
+        let git_heading = if (*state).git_enabled { scale(25) } else { 0 };
+        place(GIT_LABEL as i32, left, scale(74), list_width, scale(22));
         place(
             LIST as i32,
             left,
-            scale(74),
+            scale(74) + git_heading,
             list_width,
             height
                 - scale(if (*state).name_edit.is_some() {
                     144
                 } else {
                     108
-                }),
+                })
+                - git_heading,
         );
         let list = GetDlgItem(hwnd, LIST as i32);
         let kind = scale(85);
+        let git = if (*state).git_enabled { scale(165) } else { 0 };
         SendMessageW(
             list,
             LVM_SETCOLUMNWIDTH,
             0,
-            (list_width - kind - scale(20)).max(40) as isize,
+            (list_width - kind - git - scale(20)).max(40) as isize,
         );
         SendMessageW(list, LVM_SETCOLUMNWIDTH, 1, kind as isize);
+        SendMessageW(list, LVM_SETCOLUMNWIDTH, 2, git as isize);
         place(
             STATUS as i32,
             left,
@@ -682,6 +715,9 @@ unsafe fn complete(hwnd: HWND, state: *mut State) {
                 if (*state).change.is_none() {
                     listing_status(hwnd, state);
                 }
+                if (*state).git_enabled {
+                    refresh_git(hwnd, state);
+                }
             }
             Err(error) => show_error(hwnd, state, &error),
         }
@@ -772,6 +808,25 @@ unsafe fn preview(hwnd: HWND, state: *mut State, row: i32) {
 unsafe fn action(hwnd: HWND, state: *mut State, id: usize) {
     unsafe {
         match id {
+            GIT_TOGGLE => {
+                (*state).git_enabled = !(*state).git_enabled;
+                let label = if (*state).git_enabled {
+                    (*state).label("Hide Git", "Ocultar Git")
+                } else {
+                    (*state).label("Show Git", "Exibir Git")
+                };
+                set_text(hwnd, GIT_TOGGLE, label);
+                ShowWindow(
+                    GetDlgItem(hwnd, GIT_LABEL as i32),
+                    if (*state).git_enabled {
+                        SW_SHOWNA
+                    } else {
+                        SW_HIDE
+                    },
+                );
+                refresh_git(hwnd, state);
+                layout(hwnd, state);
+            }
             APPLY_NAME => submit_name(hwnd, state),
             CANCEL_NAME if (*state).change.is_none() => end_name_edit(hwnd, state),
             MINIMISE => {
@@ -1048,6 +1103,131 @@ unsafe fn list_menu(hwnd: HWND, state: *mut State, origin: HWND, lp: LPARAM) {
     }
 }
 
+unsafe fn refresh_git(hwnd: HWND, state: *mut State) {
+    unsafe {
+        (*state).git_revision += 1;
+        (*state).git = None;
+        InvalidateRect(GetDlgItem(hwnd, LIST as i32), std::ptr::null(), 0);
+        if (*state).git_enabled {
+            start_git(hwnd, state);
+        }
+    }
+}
+
+unsafe fn start_git(hwnd: HWND, state: *mut State) {
+    unsafe {
+        let Some(folder) = (*state).navigation.current().map(Path::to_path_buf) else {
+            set_text(
+                hwnd,
+                GIT_LABEL,
+                (*state).label("Git · choose a folder", "Git · escolha uma pasta"),
+            );
+            return;
+        };
+        set_text(
+            hwnd,
+            GIT_LABEL,
+            (*state).label("Checking Git…", "Consultando Git…"),
+        );
+        if (*state).git_job.is_some() {
+            return;
+        }
+        let target = hwnd as usize;
+        let (sender, result) = mpsc::channel();
+        match thread::Builder::new()
+            .name("monolith-files-git".into())
+            .spawn(move || {
+                if sender.send(file_git::inspect(&folder)).is_ok() {
+                    PostMessageW(target as HWND, GIT_READY, 0, 0);
+                }
+            }) {
+            Ok(_) => {
+                (*state).git_job = Some(GitJob {
+                    revision: (*state).git_revision,
+                    result,
+                })
+            }
+            Err(_) => set_text(
+                hwnd,
+                GIT_LABEL,
+                (*state).label("Git status unavailable", "Status do Git indisponível"),
+            ),
+        }
+    }
+}
+
+unsafe fn finish_git(hwnd: HWND, state: *mut State) {
+    unsafe {
+        let Some(job) = (*state).git_job.take() else {
+            return;
+        };
+        if !(*state).git_enabled {
+            return;
+        }
+        if job.revision != (*state).git_revision {
+            start_git(hwnd, state);
+            return;
+        }
+        let label = match job.result.try_recv() {
+            Ok(Ok(Some(repository))) => {
+                let mut label = match &repository.branch {
+                    Branch::Named {
+                        name,
+                        unborn: false,
+                    } => format!("Git · {name}"),
+                    Branch::Named { name, unborn: true } => format!(
+                        "Git · {name} · {}",
+                        (*state).label("no commits yet", "sem commits")
+                    ),
+                    Branch::Detached { oid } => format!(
+                        "Git · {} {}",
+                        (*state).label("detached at", "HEAD destacado em"),
+                        oid.get(..8).unwrap_or(oid)
+                    ),
+                };
+                if let Some(upstream) = &repository.upstream {
+                    use std::fmt::Write;
+                    let _ = write!(label, " · {}", upstream.name);
+                    if let Some((ahead, behind)) = upstream.ahead_behind {
+                        let _ = write!(
+                            label,
+                            " · {ahead} {} · {behind} {}",
+                            (*state).label("ahead", "à frente"),
+                            (*state).label("behind", "atrás")
+                        );
+                    }
+                }
+                (*state).git = Some(repository);
+                label
+            }
+            Ok(Ok(None)) => (*state)
+                .label("Git · no repository", "Git · sem repositório")
+                .to_owned(),
+            _ => (*state)
+                .label("Git status unavailable", "Status do Git indisponível")
+                .to_owned(),
+        };
+        set_text(hwnd, GIT_LABEL, &label);
+        InvalidateRect(GetDlgItem(hwnd, LIST as i32), std::ptr::null(), 0);
+    }
+}
+
+fn git_item_text(state: &State, item: Option<ItemStatus>) -> String {
+    let Some(item) = item else {
+        return String::new();
+    };
+    [
+        (item.conflicted, state.label("Conflicted", "Conflito")),
+        (item.staged, state.label("Staged", "Preparado")),
+        (item.modified, state.label("Modified", "Modificado")),
+        (item.untracked, state.label("Untracked", "Não rastreado")),
+    ]
+    .into_iter()
+    .filter_map(|(present, label)| present.then_some(label))
+    .collect::<Vec<_>>()
+    .join(", ")
+}
+
 unsafe fn cell_text(state: *mut State, info: &mut NMLVDISPINFOW) {
     unsafe {
         let item = &mut info.item;
@@ -1055,15 +1235,23 @@ unsafe fn cell_text(state: *mut State, info: &mut NMLVDISPINFOW) {
             return;
         }
         let entries = &(*state).listing.entries;
-        let content = entries.get(item.iItem as usize).map_or("", |entry| {
-            if item.iSubItem == 0 {
-                entry.display()
-            } else if entry.directory {
-                (*state).label("Folder", "Pasta")
-            } else {
-                (*state).label("File", "Arquivo")
+        let git_text;
+        let content = match (item.iSubItem, entries.get(item.iItem as usize)) {
+            (0, Some(entry)) => entry.display(),
+            (1, Some(entry)) if entry.directory => (*state).label("Folder", "Pasta"),
+            (1, Some(_)) => (*state).label("File", "Arquivo"),
+            (2, Some(entry)) => {
+                git_text = git_item_text(
+                    &*state,
+                    (*state)
+                        .git
+                        .as_ref()
+                        .and_then(|repository| repository.item(&entry.name)),
+                );
+                &git_text
             }
-        });
+            _ => "",
+        };
         let text = std::slice::from_raw_parts_mut(item.pszText, item.cchTextMax as usize);
         let available = text.len() - 1;
         let count = content
@@ -1084,6 +1272,10 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
             return DefWindowProcW(hwnd, msg, wp, lp);
         }
         match msg {
+            GIT_READY => {
+                finish_git(hwnd, state);
+                0
+            }
             file_changes::READY => {
                 finish_change(hwnd, state);
                 0
