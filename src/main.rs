@@ -17,9 +17,13 @@ mod dock;
 #[cfg(windows)]
 mod file_changes;
 #[cfg(windows)]
+mod file_clipboard;
+#[cfg(windows)]
 mod file_git;
 #[cfg(windows)]
 mod file_launch;
+#[cfg(windows)]
+mod file_transfer;
 #[cfg(windows)]
 mod files;
 #[cfg(windows)]

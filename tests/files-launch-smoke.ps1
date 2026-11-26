@@ -74,7 +74,7 @@ public static class LaunchProbe {
     $list = [DesktopSmoke]::GetDlgItem($window, 9)
     Wait-Until { [DesktopSmoke]::Send($list, 0x1004, [UIntPtr]::Zero, [IntPtr]::Zero).ToInt32() -eq 1 } 'The verification folder did not load.'
     Press-Key 0x24
-    Choose-Action 0.75
+    Choose-Action 0.5
     Wait-Until { Test-Path -LiteralPath $resultPath } 'The configured IDE executable did not launch.'
     $opened = [IO.File]::ReadAllLines($resultPath)
     if ($opened.Count -ne 2 -or $opened[0] -ne $project -or $opened[1] -ne $project) { throw 'The IDE did not receive the selected project path.' }
@@ -83,7 +83,7 @@ public static class LaunchProbe {
     [void][DesktopSmoke]::SetForegroundWindow($window)
     if ([DesktopSmoke]::GetForegroundWindow() -ne $window) { [void][DesktopSmoke]::Click($list) }
     Wait-Until { [DesktopSmoke]::GetForegroundWindow() -eq $window } 'Files did not return to the foreground.'
-    Choose-Action 0.58
+    Choose-Action 0.39
     $filter = "ParentProcessId = $($launcher.Id) AND Name = 'powershell.exe'"
     Wait-Until { (Get-CimInstance Win32_Process -Filter $filter) -ne $null } 'Files did not launch the system PowerShell terminal.'
     $child = Get-CimInstance Win32_Process -Filter $filter | Select-Object -First 1

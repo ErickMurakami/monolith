@@ -88,7 +88,7 @@ try {
     Press-Key 0x5D
     Wait-Until { [DesktopSmoke]::FindVisibleForProcess('#32768', [uint32]$launcher.Id) -ne [IntPtr]::Zero } 'The Files context menu did not appear.'
     $menu = [DesktopSmoke]::FindVisibleForProcess('#32768', [uint32]$launcher.Id)
-    Wait-Until { [DesktopSmoke]::ClickAt($menu, 0.875) } 'Could not select New folder in the context menu.'
+    Wait-Until { [DesktopSmoke]::ClickAt($menu, 0.94) } 'Could not select New folder in the context menu.'
     Wait-Until { [DesktopSmoke]::IsWindowVisible($field) -and (Read-Label $status) -eq 'New folder' } 'The menu did not open the new folder editor.'
     $directoryName = 'M' + [char]0xFA + 'sica'
     Submit-Name $directoryName

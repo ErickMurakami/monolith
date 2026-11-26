@@ -29,6 +29,8 @@ Launch with `--mission-control` or select **Mission Control** from the Dock or T
 
 Launch with `--files` or select **Files** from a shell context menu. Pass a folder after `--files` to start there. The native window provides a virtualised list, shortcuts to standard folders and a location field. Use Ctrl+L for the location field, Alt+Left and Alt+Right for history, Alt+Up for the parent folder, Ctrl+H for hidden files and F5 to refresh. Open a selected folder or file with Enter or a double-click. File activation uses the Windows default application. Press F2 to rename an item or Ctrl+Shift+N to create a folder. Both actions are available from the Files context menu and reject existing destination names.
 
+With the file list focused, use Ctrl+C, Ctrl+X and Ctrl+V to copy, cut and paste. The context menu provides the same actions. The Windows Shell keeps existing destination items by naming incoming copies or moves differently when needed. Press Escape in Files or use the Windows transfer dialog to request cancellation. A batch interrupted after some items have transferred can leave those completed items in the destination.
+
 Press Space on a file or folder in the list to open Quick Look. It shows common image formats, the first PDF page, UTF-8 or UTF-16 text and basic item details. Markdown and source files are displayed as literal text. Press Space or Escape to return to the list.
 
 Select **Show Git** or press Ctrl+G to see the current branch, locally known upstream counts, and staged, modified, untracked or conflicted items. Folder rows summarise changes within them. The view uses an installed Git for Windows and refreshes on navigation or F5. Git status starts off in each Files window.

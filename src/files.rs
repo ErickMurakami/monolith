@@ -2,8 +2,10 @@
 
 use crate::{
     file_changes::{self, Change, Outcome},
+    file_clipboard::{self, MAX_PATHS},
     file_git::{self, Branch, ItemStatus},
     file_launch::{self, Tool},
+    file_transfer::{self, TransferOutcome},
     files_directory::{self, Listing, Move, Navigation, Reader},
     overlay::{self, Palette},
     quick_look::{self, QuickLook},
@@ -18,7 +20,7 @@ use std::{
     ptr::null_mut,
     sync::{
         Arc,
-        atomic::AtomicBool,
+        atomic::{AtomicBool, Ordering},
         mpsc::{self, Receiver},
     },
     thread,
@@ -62,6 +64,7 @@ const CANCEL_NAME: usize = 14;
 const GIT_TOGGLE: usize = 15;
 const GIT_LABEL: usize = 16;
 const GIT_READY: u32 = WM_APP + 17;
+const CLIPBOARD_READY: u32 = WM_APP + 19;
 const FIRST_FAVOURITE: usize = 20;
 const FOLDERS: [(GUID, &str, &str); 4] = [
     (FOLDERID_Profile, "Home", "Início"),
@@ -82,6 +85,8 @@ struct State {
     git_job: Option<GitJob>,
     ide: Option<PathBuf>,
     external: Option<Receiver<io::Result<()>>>,
+    clipboard: Option<ClipboardJob>,
+    transfer_status: Option<String>,
     navigation: Navigation,
     listing: Listing,
     listing_generation: u64,
@@ -99,6 +104,22 @@ struct State {
 struct GitJob {
     revision: u64,
     result: Receiver<io::Result<Option<file_git::Status>>>,
+}
+
+struct ClipboardJob {
+    result: Receiver<io::Result<ClipboardOutcome>>,
+    cancel: Arc<AtomicBool>,
+    close_after: bool,
+}
+
+enum ClipboardWork {
+    Publish(Vec<PathBuf>, bool),
+    Paste(PathBuf),
+}
+
+enum ClipboardOutcome {
+    Copied(bool),
+    Pasted(TransferOutcome),
 }
 
 impl State {
@@ -209,6 +230,8 @@ pub fn run(
             git_job: None,
             ide: file_launch::configured_ide(ide),
             external: None,
+            clipboard: None,
+            transfer_status: None,
             navigation: Navigation::default(),
             requested: None,
             listing: Listing::default(),
@@ -434,6 +457,7 @@ unsafe fn key(hwnd: HWND, state: *mut State, message: &MSG) -> bool {
             VK_ESCAPE if (*state).name_edit.is_some() && (*state).change.is_none() => {
                 end_name_edit(hwnd, state)
             }
+            VK_ESCAPE if (*state).clipboard.is_some() => cancel_clipboard(hwnd, state),
             VK_RETURN if message.hwnd == GetDlgItem(hwnd, NAME_EDIT as i32) => {
                 submit_name(hwnd, state)
             }
@@ -447,6 +471,10 @@ unsafe fn key(hwnd: HWND, state: *mut State, message: &MSG) -> bool {
             }
             VK_H if ctrl => action(hwnd, state, HIDDEN),
             VK_G if ctrl => action(hwnd, state, GIT_TOGGLE),
+            VK_C | VK_X if ctrl && message.hwnd == list => {
+                copy_selection(hwnd, state, None, vk == VK_X)
+            }
+            VK_V if ctrl && message.hwnd == list => paste_selection(hwnd, state),
             VK_F5 => refresh(hwnd, state),
             VK_RETURN if message.hwnd == edit => {
                 let length = GetWindowTextLengthW(edit);
@@ -660,6 +688,7 @@ unsafe fn set_text(hwnd: HWND, id: usize, text: &str) {
 
 unsafe fn request(hwnd: HWND, state: *mut State, path: PathBuf, movement: Move) {
     unsafe {
+        (*state).transfer_status = None;
         if (*state).name_edit.is_some() && (*state).change.is_none() {
             end_name_edit(hwnd, state);
         }
@@ -723,7 +752,11 @@ unsafe fn complete(hwnd: HWND, state: *mut State) {
                 (*state).listing_generation += 1;
                 SendMessageW(list, LVM_SETITEMCOUNT, count, 0);
                 if (*state).change.is_none() {
-                    listing_status(hwnd, state);
+                    if let Some(label) = (*state).transfer_status.take() {
+                        set_text(hwnd, STATUS, &label);
+                    } else {
+                        listing_status(hwnd, state);
+                    }
                 }
                 if (*state).git_enabled {
                     refresh_git(hwnd, state);
@@ -907,7 +940,8 @@ unsafe fn name_controls(hwnd: HWND, visible: bool, enabled: bool) {
 
 unsafe fn begin_name_edit(hwnd: HWND, state: *mut State, row: Option<i32>) {
     unsafe {
-        if (*state).requested.is_some() || (*state).change.is_some() {
+        if (*state).requested.is_some() || (*state).change.is_some() || (*state).clipboard.is_some()
+        {
             return;
         }
         let Some(directory) = (*state).navigation.current().map(Path::to_path_buf) else {
@@ -1108,6 +1142,13 @@ unsafe fn list_menu(hwnd: HWND, state: *mut State, origin: HWND, lp: LPARAM) {
                 wide((*state).label("Open in configured IDE", "Abrir na IDE configurada")).as_ptr(),
             );
         }
+        for (id, label, flags) in [
+            (7, (*state).label("Copy", "Copiar"), item_state),
+            (8, (*state).label("Cut", "Recortar"), item_state),
+            (9, (*state).label("Paste", "Colar"), folder_state),
+        ] {
+            AppendMenuW(menu, MF_STRING | flags, id, wide(label).as_ptr());
+        }
         AppendMenuW(
             menu,
             MF_STRING | folder_state,
@@ -1137,6 +1178,8 @@ unsafe fn list_menu(hwnd: HWND, state: *mut State, origin: HWND, lp: LPARAM) {
                     launch_tool(hwnd, state, Tool::Ide(executable), row);
                 }
             }
+            7 | 8 => copy_selection(hwnd, state, Some(row), selected == 8),
+            9 => paste_selection(hwnd, state),
             _ => {}
         }
     }
@@ -1175,6 +1218,220 @@ unsafe fn launch_error(hwnd: HWND, state: *mut State, error: &io::Error) {
                 )
             ),
         );
+    }
+}
+
+unsafe fn copy_selection(hwnd: HWND, state: *mut State, clicked: Option<i32>, cut: bool) {
+    unsafe {
+        let Some(folder) = (*state).navigation.current() else {
+            return;
+        };
+        let list = GetDlgItem(hwnd, LIST as i32);
+        let entries = &(*state).listing.entries;
+        let mut paths = Vec::new();
+        if let Some(row) = clicked.filter(|row| {
+            *row >= 0
+                && SendMessageW(
+                    list,
+                    LVM_GETITEMSTATE,
+                    *row as usize,
+                    LVIS_SELECTED as isize,
+                ) == 0
+        }) {
+            if let Some(entry) = entries.get(row as usize) {
+                paths.push(folder.join(&entry.name));
+            }
+        } else {
+            let mut row = -1;
+            loop {
+                row = SendMessageW(list, LVM_GETNEXTITEM, row as usize, LVNI_SELECTED as isize);
+                let Some(entry) = entries.get(row as usize) else {
+                    break;
+                };
+                if paths.len() == MAX_PATHS {
+                    set_text(
+                        hwnd,
+                        STATUS,
+                        (*state).label(
+                            "Selection is too large for the clipboard",
+                            "A seleção é grande demais para a área de transferência",
+                        ),
+                    );
+                    return;
+                }
+                paths.push(folder.join(&entry.name));
+            }
+        }
+        if !paths.is_empty() {
+            start_clipboard(hwnd, state, ClipboardWork::Publish(paths, cut));
+        }
+    }
+}
+
+unsafe fn paste_selection(hwnd: HWND, state: *mut State) {
+    unsafe {
+        if (*state).requested.is_none()
+            && let Some(folder) = (*state).navigation.current()
+        {
+            start_clipboard(hwnd, state, ClipboardWork::Paste(folder.to_owned()));
+        }
+    }
+}
+
+fn clipboard_work(
+    window: HWND,
+    work: ClipboardWork,
+    cancel: Arc<AtomicBool>,
+) -> io::Result<ClipboardOutcome> {
+    match work {
+        ClipboardWork::Publish(paths, cut) => {
+            if cancel.load(Ordering::Relaxed) {
+                return Err(io::Error::from(io::ErrorKind::Interrupted));
+            }
+            file_clipboard::publish(window, &paths, cut)?;
+            Ok(ClipboardOutcome::Copied(cut))
+        }
+        ClipboardWork::Paste(folder) => {
+            let selection = file_clipboard::read(window)?;
+            let outcome = file_transfer::perform(
+                window,
+                &selection.paths,
+                &folder,
+                selection.move_items,
+                cancel,
+            )?;
+            if matches!(outcome, TransferOutcome::Complete)
+                && let Some(sequence) = selection.own_cut_sequence
+            {
+                file_clipboard::clear_cut(window, sequence);
+            }
+            Ok(ClipboardOutcome::Pasted(outcome))
+        }
+    }
+}
+
+unsafe fn start_clipboard(hwnd: HWND, state: *mut State, work: ClipboardWork) {
+    unsafe {
+        if (*state).clipboard.is_some()
+            || (*state).name_edit.is_some()
+            || (*state).requested.is_some()
+        {
+            return;
+        }
+        let pasted = matches!(&work, ClipboardWork::Paste(_));
+        let target = hwnd as usize;
+        let (sender, result) = mpsc::channel();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let worker_cancel = Arc::clone(&cancel);
+        match thread::Builder::new()
+            .name("monolith-files-transfer".into())
+            .spawn(move || {
+                let target = target as HWND;
+                if sender
+                    .send(clipboard_work(target, work, worker_cancel))
+                    .is_ok()
+                {
+                    PostMessageW(target, CLIPBOARD_READY, usize::from(pasted), 0);
+                }
+            }) {
+            Ok(_) => {
+                (*state).clipboard = Some(ClipboardJob {
+                    result,
+                    cancel,
+                    close_after: false,
+                });
+                if pasted {
+                    set_text(
+                        hwnd,
+                        STATUS,
+                        (*state).label(
+                            "Transferring files… Escape cancels",
+                            "Transferindo arquivos… Escape cancela",
+                        ),
+                    );
+                }
+            }
+            Err(error) => set_text(
+                hwnd,
+                STATUS,
+                &format!(
+                    "{} · {error}",
+                    (*state).label(
+                        "Could not start the file operation",
+                        "Não foi possível iniciar a operação de arquivos"
+                    )
+                ),
+            ),
+        }
+    }
+}
+
+unsafe fn cancel_clipboard(hwnd: HWND, state: *mut State) {
+    unsafe {
+        if let Some(job) = (*state).clipboard.as_ref() {
+            job.cancel.store(true, Ordering::Relaxed);
+            set_text(
+                hwnd,
+                STATUS,
+                (*state).label(
+                    "Cancelling file operation…",
+                    "Cancelando a operação de arquivos…",
+                ),
+            );
+        }
+    }
+}
+
+unsafe fn finish_clipboard(hwnd: HWND, state: *mut State, pasted: bool) {
+    unsafe {
+        let Some(job) = (*state).clipboard.take() else {
+            return;
+        };
+        if job.close_after {
+            PostMessageW(hwnd, WM_CLOSE, 0, 0);
+            return;
+        }
+        let Ok(result) = job.result.try_recv() else {
+            return;
+        };
+        let label = match result {
+            Ok(ClipboardOutcome::Copied(false)) => (*state)
+                .label(
+                    "Files copied to the clipboard",
+                    "Arquivos copiados para a área de transferência",
+                )
+                .to_owned(),
+            Ok(ClipboardOutcome::Copied(true)) => (*state)
+                .label(
+                    "Files cut to the clipboard",
+                    "Arquivos recortados para a área de transferência",
+                )
+                .to_owned(),
+            Ok(ClipboardOutcome::Pasted(TransferOutcome::Complete)) => (*state)
+                .label("Transfer complete", "Transferência concluída")
+                .to_owned(),
+            Ok(ClipboardOutcome::Pasted(TransferOutcome::Interrupted)) => (*state)
+                .label(
+                    "Transfer interrupted. Check the source and destination.",
+                    "Transferência interrompida. Verifique a origem e o destino.",
+                )
+                .to_owned(),
+            Err(error) => format!(
+                "{} · {error}",
+                (*state).label(
+                    "Could not transfer files",
+                    "Não foi possível transferir os arquivos"
+                )
+            ),
+        };
+        if pasted && (*state).requested.is_none() {
+            refresh(hwnd, state);
+            if (*state).requested.is_some() {
+                (*state).transfer_status = Some(label);
+                return;
+            }
+        }
+        set_text(hwnd, STATUS, &label);
     }
 }
 
@@ -1347,6 +1604,10 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
             return DefWindowProcW(hwnd, msg, wp, lp);
         }
         match msg {
+            CLIPBOARD_READY => {
+                finish_clipboard(hwnd, state, wp != 0);
+                0
+            }
             file_launch::READY => {
                 if let Some(receive) = (*state).external.take()
                     && let Ok(Err(error)) = receive.try_recv()
@@ -1483,6 +1744,11 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                 1
             }
             WM_CLOSE => {
+                if let Some(job) = (*state).clipboard.as_mut() {
+                    job.close_after = true;
+                    cancel_clipboard(hwnd, state);
+                    return 0;
+                }
                 drop((*state).preview.take());
                 drop((*state).reader.take());
                 DestroyWindow(hwnd);

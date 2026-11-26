@@ -56,6 +56,18 @@ public static class DesktopSmoke {
 
     [StructLayout(LayoutKind.Sequential)] struct Point { public int X, Y; }
     [StructLayout(LayoutKind.Sequential)] struct Rect { public int Left, Top, Right, Bottom; }
+    [StructLayout(LayoutKind.Sequential)] struct GuiThread {
+        public uint Size, Flags;
+        public IntPtr Active, Focus, Capture, MenuOwner, MoveSize, Caret;
+        public Rect CaretBounds;
+    }
+    [DllImport("user32.dll")] static extern bool GetGUIThreadInfo(uint thread, ref GuiThread info);
+    public static IntPtr FocusedChild(IntPtr parent) {
+        uint process;
+        uint thread = GetWindowThreadProcessId(parent, out process);
+        var info = new GuiThread { Size = (uint)Marshal.SizeOf(typeof(GuiThread)) };
+        return thread != 0 && GetGUIThreadInfo(thread, ref info) ? info.Focus : IntPtr.Zero;
+    }
     [StructLayout(LayoutKind.Sequential)] struct MouseInput {
         public int X, Y;
         public uint Data, Flags, Time;

@@ -25,6 +25,7 @@ Foundation and the first native application are implemented. Desktop Experience 
 - `src/file_changes.rs` performs same-directory rename and folder creation without overwriting an existing destination.
 - `src/file_git.rs` provides opt-in branch, locally known upstream and file status through a bounded, read-only Git worker.
 - `src/file_launch.rs` opens the terminal in the displayed directory and passes a selected project to the configured IDE.
+- `src/file_clipboard.rs` and `src/file_transfer.rs` implement on-demand native Files copy, cut and paste with Shell clipboard interchange, collision-safe naming and cancellation requests.
 - `benchmarks/measure.ps1` samples Windows and Monolith memory, CPU and I/O.
 - The benchmark also records the busiest GPU engine from WDDM counters when available.
 - `docs/spotlight.png` shows a calculation in the running borderless Spotlight release build.
@@ -63,6 +64,8 @@ On Windows 11 26H2 build 26300.9974, `tests/files-change-smoke.ps1` verified the
 
 `tests/files-launch-smoke.ps1` verified the native PowerShell terminal prompt in the intended working directory, including spaces and a semicolon, plus the exact project argument and working directory received by a configured native executable. Windows Terminal's installed alias path and specific IDE integrations remain to be smoke-tested. Twenty-eight unit tests passed.
 
+`tests/files-transfer-smoke.ps1` verified a Unicode clipboard file list, copy with an existing destination, recovery from a rejected same-folder move, a successful cut and paste, and paste from an external Shell clipboard producer. Native tests covered nested directory collisions, a locked item and cancellation before writing. Formatting, strict Clippy, 33 tests, a locked release build and the existing Files rename and launch smoke tests passed. Mid-transfer cancellation through the native progress dialog, moves across volumes, and live WSL or UNC transfers remain open.
+
 Checked the declared licences of all locked dependencies, including the added Windows Runtime bindings. Cargo Audit passed with warnings denied across 31 lockfile entries.
 
 ## Measurements
@@ -78,6 +81,8 @@ After adding Shell icons, twelve idle Dock samples across two runs measured 2.05
 At `6fcb723`, two baseline and shell-idle pairs provided twelve samples per scenario. The Dock and Top Bar were visible, Spotlight was closed and the enabled Island had no active media presentation. The combined process used 2.33-2.36 MiB of private working set, 25.27-25.31 MiB of total working set and 5.03-5.07 MiB of private bytes. App CPU, busiest GPU engine and I/O counters read zero at sample resolution. System CPU ranged from 0% to 51% at baseline and 0% to 49% with the shell. System busiest-engine GPU ranged from 1% to 4% at baseline and 1% to 5% with the shell.
 
 At `c04bb81`, two matched idle pairs provided twelve samples per scenario with the Dock and Top Bar visible, the Island enabled with no active presentation and Spotlight, Mission Control and Control Center closed. Monolith used 2.38-2.41 MiB of private working set, 25.37-25.41 MiB of total working set and 5.09-5.13 MiB of private bytes. Its sampled CPU, busiest GPU engine and I/O counters read zero. System CPU ranged from 0% to 38% at baseline and 0% to 68% with the shell. System busiest-engine GPU ranged from 1% to 4% and 1% to 5%, respectively.
+
+At `7636547`, two baseline and shell-idle pairs provided twelve samples per scenario at nominal one-second intervals, with the Dock, AppBar and Island enabled, Spotlight hidden and no active media. Monolith used 2.33-2.47 MiB of private working set, 25.46-25.61 MiB of total working set and 5.02-5.17 MiB of private bytes. Its CPU, busiest GPU engine and I/O counters read zero at sample resolution. Background system CPU remained high, at 47-100% for the baseline and 45-100% with the shell. System busiest-engine GPU ranged from 1-12% and 1-15%, respectively. These samples describe process residency and do not establish system-wide impact.
 
 ## Git and recovery
 
