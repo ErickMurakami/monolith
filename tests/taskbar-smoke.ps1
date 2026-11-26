@@ -66,15 +66,17 @@ function Get-Dock {
     [DesktopSmoke]::FindVisibleForProcess('MonolithDock', [uint32]$script:launcher.Id)
 }
 
+function Test-DockBand {
+    $dockWindow = Get-Dock
+    if ($dockWindow -eq [IntPtr]::Zero -or [DesktopSmoke]::IsWindowVisible($original)) { return $false }
+    $rect = [DesktopSmoke]::Bounds($dockWindow)
+    $rect[1] -gt $band.Top -and $rect[3] -lt $band.Bottom -and
+        [Math]::Abs(($rect[0] + $rect[2]) - ($band.Left + $band.Right)) -le 2
+}
+
 function Start-Lease {
     $script:launcher = Start-TestMonolith @('--replace-taskbar')
-    Wait-Until {
-        $dock = Get-Dock
-        if ($dock -eq [IntPtr]::Zero -or [DesktopSmoke]::IsWindowVisible($original)) { return $false }
-        $rect = [DesktopSmoke]::Bounds($dock)
-        $rect[1] -gt $band.Top -and $rect[3] -lt $band.Bottom -and
-            [Math]::Abs(($rect[0] + $rect[2]) - ($band.Left + $band.Right)) -le 2
-    } 'The Dock did not occupy the original taskbar band.'
+    Wait-Until { Test-DockBand } 'The Dock did not occupy the original taskbar band.'
     if (!$area.Equals(([TaskbarSmoke]::WorkArea())) -or [TaskbarSmoke]::AutoHide() -ne $flag) { throw 'The lease changed Windows work area or native auto-hide.' }
 }
 
@@ -175,6 +177,16 @@ try {
     Wait-NativeTaskbar
     Wait-DockFallback
     Close-TestMonolith $launcher 'MonolithDock'
+
+    $launcher = Start-TestMonolith @('--replace-taskbar', '--top-bar', '--island')
+    Wait-Until {
+        (Test-DockBand) -and [TaskbarSmoke]::WorkArea().Top -gt $area.Top -and
+            [DesktopSmoke]::FindVisibleForProcess('MonolithTopBar', [uint32]$launcher.Id) -ne [IntPtr]::Zero
+    } 'The Dock and AppBar could not retain both bands during combined shell startup.'
+    if ([TaskbarSmoke]::WorkArea().Bottom -ne $area.Bottom -or [TaskbarSmoke]::AutoHide() -ne $flag) { throw 'The combined shell changed the native taskbar reservation or preference.' }
+    Close-TestMonolith $launcher 'MonolithDock'
+    Wait-NativeTaskbar
+    'The Top Bar reservation and Dock taskbar band coexisted with the Island enabled.'
 
     if ($restartShell) {
         if ((New-Object -ComObject Shell.Application).Windows().Count -ne 0) { throw 'Close Explorer file windows before the explicit Shell restart test.' }

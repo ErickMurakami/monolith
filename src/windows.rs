@@ -366,6 +366,18 @@ unsafe fn run_window(
                 wide(&format!("{cue} ({detail})")).as_ptr() as isize,
             );
         }
+        // Register the top AppBar before the Dock leases the existing bottom band.
+        let top_bar = if surfaces.top_bar {
+            match TopBar::new(instance, hwnd, (*state).palette, (*state).portuguese) {
+                Ok(bar) => Some(bar),
+                Err(error) => {
+                    report(&format!("Could not open the Top Bar ({error})"));
+                    None
+                }
+            }
+        } else {
+            None
+        };
         let dock = if let Some(settings) = surfaces.dock {
             match Dock::new(
                 instance,
@@ -377,17 +389,6 @@ unsafe fn run_window(
                 Ok(dock) => Some(dock),
                 Err(error) => {
                     report(&format!("Could not open the Dock ({error})"));
-                    None
-                }
-            }
-        } else {
-            None
-        };
-        let top_bar = if surfaces.top_bar {
-            match TopBar::new(instance, hwnd, (*state).palette, (*state).portuguese) {
-                Ok(bar) => Some(bar),
-                Err(error) => {
-                    report(&format!("Could not open the Top Bar ({error})"));
                     None
                 }
             }
