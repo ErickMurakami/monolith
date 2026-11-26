@@ -92,4 +92,9 @@ Add a short entry only after meaningful investigation. Do not duplicate architec
 - Next step: <remaining blocker or implementation task>
 ```
 
-No upstream research record is pre-populated as validated. Existing Monolith test results remain in MONOLITH_STATUS.md.
+### Directional workspace navigation
+
+- Windhawk's [Virtual Desktop Helper](https://github.com/ramensoftware/windhawk-mods/blob/9e30cde12c8838f10f8bca0cf40b5b213ec1ed54/mods/virtual-desktop-helper.wh.cpp) selects private COM vtables by Windows build. The mod was reviewed by reference only.
+- [GlazeWM's workspace command](https://github.com/glzr-io/glazewm/blob/5709ad0a3c7c386bbc3e38166a865ffc12937515/packages/wm/src/commands/workspace/focus_workspace.rs) and [Komorebi's monitor workspace model](https://github.com/LGUG2Z/komorebi/blob/72aa4c97ade72b802a008bdba4bf59cca04df665/komorebi/src/monitor.rs) manage application-owned workspace state. No upstream source was reused.
+- Mission Control issues the [documented native directional shortcuts](https://support.microsoft.com/en-us/windows/experience/how-to-multitask-in-windows) on explicit selection. The 26H2 test checked desktop membership through the public COM interface, verified the boundary and restored the original desktop.
+- The documented [precision touchpad controller](https://learn.microsoft.com/en-us/windows/win32/input-precisiontouchpad/touchpadgesturescontroller) delivers input to the foreground process. A read-only device probe found an active five-contact touchpad. Global three-finger actions still require a supported mapping and physical validation.

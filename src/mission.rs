@@ -24,6 +24,8 @@ const TITLE: usize = 1;
 const TASK_VIEW: usize = 2;
 const PREVIOUS: usize = 3;
 const NEXT: usize = 4;
+const DESKTOP_LEFT: usize = 5;
+const DESKTOP_RIGHT: usize = 6;
 const FIRST_TILE: usize = 10;
 const MAX_TILES: usize = 12;
 
@@ -173,13 +175,24 @@ impl Mission {
                 });
             }
             button(
+                overview.state.label("Previous desktop", "Área anterior"),
+                DESKTOP_LEFT,
+            )?;
+            button(
                 overview
                     .state
                     .label("Windows Task View", "Visão de Tarefas do Windows"),
                 TASK_VIEW,
             )?;
-            button(overview.state.label("Previous", "Anterior"), PREVIOUS)?;
-            button(overview.state.label("Next", "Próxima"), NEXT)?;
+            button(
+                overview.state.label("Next desktop", "Próxima área"),
+                DESKTOP_RIGHT,
+            )?;
+            button(
+                overview.state.label("Previous page", "Página anterior"),
+                PREVIOUS,
+            )?;
+            button(overview.state.label("Next page", "Próxima página"), NEXT)?;
             let state = &raw mut *overview.state;
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, state as isize);
             render(hwnd, state, info.rcWork);
@@ -272,7 +285,7 @@ fn geometry(work: RECT, dpi: u32, count: usize) -> Grid {
     let tile_height = ((available_height - header - footer - 2 * padding) / rows as i32 - padding)
         .clamp(1, scale(142));
     let width = (tile_width * columns as i32 + padding * (columns + 1) as i32)
-        .max(scale(320).min(available_width));
+        .max(scale(424).min(available_width));
     let height = header + (tile_height + padding) * rows as i32 + footer + padding;
     let x = work.left + (work.right - work.left - width) / 2;
     let y = work.top + ((work.bottom - work.top - height) / 3).max(0);
@@ -332,9 +345,16 @@ unsafe fn render(hwnd: HWND, state: *mut State, work: RECT) {
             let old = (*state).font;
             (*state).font = font;
             (*state).dpi = dpi;
-            for id in [TITLE, TASK_VIEW, PREVIOUS, NEXT]
-                .into_iter()
-                .chain(FIRST_TILE..FIRST_TILE + MAX_TILES)
+            for id in [
+                TITLE,
+                TASK_VIEW,
+                PREVIOUS,
+                NEXT,
+                DESKTOP_LEFT,
+                DESKTOP_RIGHT,
+            ]
+            .into_iter()
+            .chain(FIRST_TILE..FIRST_TILE + MAX_TILES)
             {
                 SendMessageW(GetDlgItem(hwnd, id as i32), WM_SETFONT, font as usize, 0);
             }
@@ -370,32 +390,45 @@ unsafe fn render(hwnd: HWND, state: *mut State, work: RECT) {
                 SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW | SWP_NOCOPYBITS,
             )
         };
+        let show_paging = window_count > grid.capacity;
+        let width = grid.width - 2 * grid.pad;
+        let gap = scale(4);
+        let page_width = scale(101).min(width / 3).max(1);
         position(
             TITLE as i32,
             grid.pad,
             scale(5),
-            grid.width - 2 * grid.pad,
+            if show_paging {
+                width - 2 * (page_width + gap)
+            } else {
+                width
+            },
             scale(24),
         );
-        position(
-            TASK_VIEW as i32,
-            grid.pad,
-            grid.foot,
-            scale(188).min(grid.width - 2 * grid.pad),
-            scale(26),
-        );
-        let show_paging = window_count > grid.capacity;
+        let navigation_width = ((width - 2 * gap) / 3).clamp(1, scale(164));
+        let navigation_left = (grid.width - 3 * navigation_width - 2 * gap) / 2;
+        for (index, id) in [DESKTOP_LEFT, TASK_VIEW, DESKTOP_RIGHT]
+            .into_iter()
+            .enumerate()
+        {
+            position(
+                id as i32,
+                navigation_left + index as i32 * (navigation_width + gap),
+                grid.foot,
+                navigation_width,
+                scale(26),
+            );
+        }
         for index in 0..2 {
             let id = PREVIOUS as i32 + index;
             let page_button = GetDlgItem(hwnd, id);
-            let width = scale(61);
             if show_paging {
                 position(
                     id,
-                    grid.width - grid.pad - (2 - index) * width - (1 - index) * scale(4),
-                    grid.foot,
-                    width,
-                    scale(26),
+                    grid.width - grid.pad - (2 - index) * page_width - (1 - index) * gap,
+                    scale(5),
+                    page_width,
+                    scale(24),
                 );
                 EnableWindow(
                     page_button,
@@ -540,11 +573,12 @@ unsafe fn set_title(hwnd: HWND, title: &str) {
     }
 }
 
-fn open_task_view() -> bool {
+fn send_shell_shortcut(keys: &[u16]) -> bool {
     unsafe {
         let modifiers = [VK_LWIN, VK_RWIN, VK_SHIFT, VK_CONTROL, VK_MENU];
         if modifiers
             .into_iter()
+            .chain(keys.iter().copied())
             .any(|key| GetAsyncKeyState(i32::from(key)) < 0)
         {
             return false;
@@ -554,27 +588,30 @@ fn open_task_view() -> bool {
             Anonymous: INPUT_0 {
                 ki: KEYBDINPUT {
                     wVk: key,
-                    dwFlags: flags,
+                    dwFlags: if matches!(key, VK_LWIN | VK_LEFT | VK_RIGHT) {
+                        flags | KEYEVENTF_EXTENDEDKEY
+                    } else {
+                        flags
+                    },
                     ..Default::default()
                 },
             },
         };
-        let events = [
-            input(VK_LWIN, 0),
-            input(VK_TAB, 0),
-            input(VK_TAB, KEYEVENTF_KEYUP),
-            input(VK_LWIN, KEYEVENTF_KEYUP),
-        ];
+        let count = keys.len();
+        let mut events = Vec::with_capacity(count * 2);
+        events.extend(keys.iter().map(|&key| input(key, 0)));
+        events.extend(keys.iter().rev().map(|&key| input(key, KEYEVENTF_KEYUP)));
         let size = size_of::<INPUT>() as i32;
-        let sent = SendInput(events.len() as u32, events.as_ptr(), size);
-        if sent > 0 && sent < events.len() as u32 {
-            let release = [
-                input(VK_TAB, KEYEVENTF_KEYUP),
-                input(VK_LWIN, KEYEVENTF_KEYUP),
-            ];
+        let sent = SendInput(events.len() as u32, events.as_ptr(), size) as usize;
+        if sent == events.len() {
+            return true;
+        }
+        if sent > 0 {
+            // Release only keys from the partially inserted sequence that still need a key-up.
+            let release = &events[(count * 2 - sent.min(count)).max(sent)..];
             SendInput(release.len() as u32, release.as_ptr(), size);
         }
-        sent == events.len() as u32
+        false
     }
 }
 
@@ -600,18 +637,31 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
             WM_COMMAND if lp != 0 && (wp >> 16) as u16 == BN_CLICKED as u16 => {
                 let id = wp as u16 as usize;
                 match id {
-                    TASK_VIEW => {
-                        if open_task_view() {
+                    TASK_VIEW | DESKTOP_LEFT | DESKTOP_RIGHT => {
+                        let accepted = GetForegroundWindow() == hwnd
+                            && match id {
+                                TASK_VIEW => send_shell_shortcut(&[VK_LWIN, VK_TAB]),
+                                DESKTOP_LEFT => {
+                                    send_shell_shortcut(&[VK_LWIN, VK_LCONTROL, VK_LEFT])
+                                }
+                                _ => send_shell_shortcut(&[VK_LWIN, VK_LCONTROL, VK_RIGHT]),
+                            };
+                        if accepted {
                             ShowWindow(hwnd, SW_HIDE);
                             PostMessageW((*state).launcher, CLOSE, hwnd as usize, 1);
                         } else {
-                            set_title(
-                                hwnd,
+                            let hint = if id == TASK_VIEW {
                                 (*state).label(
                                     "Open Task View with Win+Tab",
                                     "Abra a Visão de Tarefas com Win+Tab",
-                                ),
-                            );
+                                )
+                            } else {
+                                (*state).label(
+                                    "Switch desktops with Win+Ctrl+Left or Right",
+                                    "Alterne áreas com Win+Ctrl+Esquerda ou Direita",
+                                )
+                            };
+                            set_title(hwnd, hint);
                         }
                     }
                     PREVIOUS => page(hwnd, state, false),

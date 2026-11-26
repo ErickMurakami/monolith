@@ -25,3 +25,5 @@
 - Added a Mission Control window overview with live thumbnails, mouse and keyboard selection, and a native Task View action.
 - Added an on-demand Monolith Files window with virtualised directory listings, history, standard folders and native app activation.
 - Added native Quick Look for text, Markdown, images, first-page PDF previews and basic item details.
+- Added Files rename and folder creation with native collision handling.
+- Added directional switching between existing Windows desktops in Mission Control.

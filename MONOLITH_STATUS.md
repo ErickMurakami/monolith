@@ -22,6 +22,7 @@ Foundation and the first native application are implemented. Desktop Experience 
 - `src/mission.rs` displays a native borderless window overview with live DWM thumbnails, the shared Dock inventory, paging, keyboard and mouse selection and a Windows Task View action.
 - `src/files.rs` owns a native, on-demand Files window with a custom title surface, virtualised navigation, standard Windows folders and default app activation. `src/files_directory.rs` loads directories off the GUI thread and preserves history on failures.
 - `src/quick_look.rs` opens a borderless text, image, PDF or metadata preview on Space in Files. `src/quick_content.rs` bounds reads and pixel counts and uses platform decoders.
+- `src/file_changes.rs` performs same-directory rename and folder creation without overwriting an existing destination.
 - `benchmarks/measure.ps1` samples Windows and Monolith memory, CPU and I/O.
 - The benchmark also records the busiest GPU engine from WDDM counters when available.
 - `docs/spotlight.png` shows a calculation in the running borderless Spotlight release build.
@@ -49,6 +50,8 @@ The media smoke test used an isolated local Helium profile and real Windows medi
 
 `tests/quick-look-smoke.ps1` verified folder details, literal Markdown, genuine PNG and PDF pixels, handling of malformed and oversized inputs, keyboard dismissal and shutdown with an open preview. Twenty-two unit tests passed. The live PNG capture was visually reviewed.
 
+On Windows 11 26H2 build 26300.9974, `tests/files-change-smoke.ps1` verified the Files changes in `3e98417`, including rejection of a reserved name, preservation of the existing file during a conflict, Unicode and case-only rename, folder creation, and cancellation. `tests/workspace-navigation-smoke.ps1` verified directional switching through native desktop membership, a boundary without wrap and restoration of the original desktop.
+
 Checked the declared licences of all locked dependencies, including the added Windows Runtime bindings. Cargo Audit passed with warnings denied across 31 lockfile entries.
 
 ## Measurements
@@ -71,10 +74,12 @@ The launcher, benchmark, calculator and window-switcher checkpoints are `e86dc9a
 
 The binary needs no elevation and makes no persistent changes to Windows. Dismiss standalone Spotlight or use **Exit** on the Dock to stop the process and release native hooks. Pass `--safe-mode` to bypass configuration and start Spotlight alone. Rename the configuration file to recover defaults. Portable removal consists of closing the process and removing the executable, with optional removal of the local configuration directory.
 
+The Windows CI checkpoint `4780b92` built and uploaded `monolith.exe`. Run `45824821038` verified locked x64 validation and an AMD64 executable with seven-day artifact retention. The release job skipped the branch push.
+
 ## Shortcut compatibility
 
 The current Windows build returned Win32 error 1409 on a direct Win+Space registration probe and accepted Ctrl+Alt+Space. An experimental low-level capture showed Spotlight but could not reliably give the search field foreground focus. The published runtime uses `RegisterHotKey` and leaves the reserved chord to Windows. A native desktop test with `-Hotkey` verifies the temporary fallback, suppression of key repeats, typing without a click, repeat-to-dismiss and restoration of focus. Live checks passed with the desktop shell, File Explorer, Helium, VS Code and IntelliJ IDEA.
 
 ## Next task
 
-Add safe first write operations and verify conflict handling in Files. Keep Windows Task View for desktop management operations beyond the public virtual desktop API. Win+Space remains the target Spotlight shortcut. Keep the experimental capture out of the public runtime until foreground activation and immediate typing are stable.
+Validate the isolated Win+Space activation bridge against the sprint requirements. Stable workspace identity, dedicated application placement, physical gestures and crash-safe taskbar restoration remain open. Continue independent native and developer-productivity work when a platform constraint blocks a P0 item.
