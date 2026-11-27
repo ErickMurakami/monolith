@@ -88,7 +88,13 @@ struct State {
 }
 
 impl Notifications {
-    pub fn new(instance: *mut c_void, palette: Palette, portuguese: bool) -> io::Result<Self> {
+    /// With `hide_content`, only the source app is shown and kept; never the text.
+    pub fn new(
+        instance: *mut c_void,
+        palette: Palette,
+        portuguese: bool,
+        hide_content: bool,
+    ) -> io::Result<Self> {
         unsafe {
             let class_name = wide("MonolithNotification");
             let class = WNDCLASSW {
@@ -130,7 +136,9 @@ impl Notifications {
             let target = hwnd as usize;
             let worker = thread::Builder::new()
                 .name("monolith-notifications".into())
-                .spawn(move || watch(pending, deliver, target))?;
+                .spawn(move || {
+                    watch(pending, deliver, target, hide_content.then_some(portuguese))
+                })?;
             let mut notifications = Self {
                 hwnd,
                 hook: null_mut(),
@@ -218,7 +226,13 @@ unsafe extern "system" fn shell_event(
     });
 }
 
-fn watch(checks: Receiver<()>, deliver: SyncSender<Incoming>, target: usize) {
+/// `private` carries the label language when content must be withheld.
+fn watch(
+    checks: Receiver<()>,
+    deliver: SyncSender<Incoming>,
+    target: usize,
+    private: Option<bool>,
+) {
     use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx, CoUninitialize};
     // Shell items for app icons expect a single-threaded apartment.
     if unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) }.is_err() {
@@ -243,7 +257,8 @@ fn watch(checks: Receiver<()>, deliver: SyncSender<Incoming>, target: usize) {
                 let Ok(id) = notification.Id() else { continue };
                 current.insert(id);
                 if !known.contains(&id)
-                    && let Some(incoming) = describe(&notification)
+                    && let Some(incoming) =
+                        describe(&notification).map(|incoming| withhold(incoming, private))
                     && deliver.try_send(incoming).is_ok()
                 {
                     unsafe { PostMessageW(target as HWND, READY, 0, 0) };
@@ -357,6 +372,23 @@ fn shell_icon(app_id: &str) -> Option<Artwork> {
         rows
     };
     (rows == SIDE).then(|| Artwork::from_bgra(SIDE as u32, SIDE as u32, pixels))?
+}
+
+/// Replace the text with a neutral label so private content is never shown or kept.
+fn withhold(incoming: Incoming, private: Option<bool>) -> Incoming {
+    match private {
+        None => incoming,
+        Some(portuguese) => Incoming {
+            title: if portuguese {
+                "Nova notificação"
+            } else {
+                "New notification"
+            }
+            .to_owned(),
+            body: String::new(),
+            ..incoming
+        },
+    }
 }
 
 /// The first text element is the title; the remaining ones form the body.
@@ -991,5 +1023,16 @@ mod tests {
         assert_eq!(target(40, 50, 360, 0, 3, 96), Target::Entry(0));
         assert_eq!(target(40, 50, 360, 68, 3, 96), Target::Entry(1));
         assert_eq!(target(40, 44 + 3 * 68, 360, 0, 3, 96), Target::Nothing);
+    }
+
+    #[test]
+    fn withholds_text_but_keeps_the_source_app() {
+        let incoming = compose("Signal".into(), vec!["Ana".into(), "See you at 8".into()]).unwrap();
+        let hidden = withhold(incoming, Some(false));
+        assert_eq!(hidden.app, "Signal");
+        assert_eq!(hidden.title, "New notification");
+        assert!(hidden.body.is_empty());
+        let shown = withhold(compose("A".into(), vec!["T".into()]).unwrap(), None);
+        assert_eq!(shown.title, "T");
     }
 }

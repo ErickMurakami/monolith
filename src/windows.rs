@@ -61,6 +61,7 @@ struct SurfaceOptions {
     top_bar: bool,
     island: bool,
     notifications: bool,
+    hide_notification_content: bool,
     control_center: bool,
     mission: bool,
 }
@@ -292,6 +293,7 @@ pub fn run() -> io::Result<()> {
                 island: show_island,
                 notifications: !safe
                     && (settings.notifications || args.iter().any(|arg| arg == "--notifications")),
+                hide_notification_content: settings.hide_notification_content,
                 control_center: !safe && args.iter().any(|arg| arg == "--control-center"),
                 mission: !safe && args.iter().any(|arg| arg == "--mission-control"),
             },
@@ -424,7 +426,12 @@ unsafe fn run_window(
         };
         // Lives until the GUI loop ends; dropping it removes the hook and stops the worker.
         let notifications = if surfaces.notifications {
-            match Notifications::new(instance, (*state).palette, (*state).portuguese) {
+            match Notifications::new(
+                instance,
+                (*state).palette,
+                (*state).portuguese,
+                surfaces.hide_notification_content,
+            ) {
                 Ok(notifications) => Some(notifications),
                 Err(error) => {
                     report(&format!("Could not start notifications ({error})"));

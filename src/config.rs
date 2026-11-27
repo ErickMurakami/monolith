@@ -17,6 +17,8 @@ pub struct Config {
     pub win_space_override: bool,
     /// Experimental: show incoming Windows notifications below the Island.
     pub notifications: bool,
+    /// Show only the source app in banners and history, never the text.
+    pub hide_notification_content: bool,
     /// Experimental: Win+1-9 select desktops and Win+Tab opens Mission Control.
     pub workspace_shortcuts: bool,
     pub dock: bool,
