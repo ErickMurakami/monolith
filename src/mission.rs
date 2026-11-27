@@ -4,6 +4,7 @@
 use crate::{
     desktop::{self, Snapshot, Window, WindowTarget},
     overlay::{self, Palette},
+    overlay::{fill, mix, rounded, text},
     preview::Thumbnail,
     windows::wide,
 };
@@ -89,18 +90,6 @@ impl Colours {
         }
     }
 }
-
-/// `from` moved `percent` of the way towards `to`, per channel.
-fn mix(from: u32, to: u32, percent: u32) -> u32 {
-    (0..3).fold(0, |colour, channel| {
-        let shift = channel * 8;
-        let a = (from >> shift) & 0xff;
-        let b = (to >> shift) & 0xff;
-        let value = (a * (100 - percent) + b * percent) / 100;
-        colour | (value << shift)
-    })
-}
-
 struct State {
     launcher: HWND,
     previous: HWND,
@@ -812,63 +801,6 @@ unsafe fn close(hwnd: HWND, state: *mut State, restore: bool) {
 
 fn contains(rect: &RECT, point: POINT) -> bool {
     point.x >= rect.left && point.x < rect.right && point.y >= rect.top && point.y < rect.bottom
-}
-
-unsafe fn rounded(dc: HDC, rect: &RECT, radius: i32, fill: u32, border: Option<(u32, i32)>) {
-    unsafe {
-        let brush = CreateSolidBrush(fill);
-        let pen = match border {
-            Some((colour, width)) => CreatePen(PS_INSIDEFRAME, width, colour),
-            None => CreatePen(PS_NULL, 0, 0),
-        };
-        let old_brush = SelectObject(dc, brush);
-        let old_pen = SelectObject(dc, pen);
-        let grow = i32::from(border.is_none());
-        RoundRect(
-            dc,
-            rect.left,
-            rect.top,
-            rect.right + grow,
-            rect.bottom + grow,
-            2 * radius,
-            2 * radius,
-        );
-        SelectObject(dc, old_brush);
-        SelectObject(dc, old_pen);
-        DeleteObject(brush);
-        DeleteObject(pen);
-    }
-}
-
-unsafe fn fill(dc: HDC, rect: &RECT, colour: u32) {
-    unsafe {
-        let brush = CreateSolidBrush(colour);
-        FillRect(dc, rect, brush);
-        DeleteObject(brush);
-    }
-}
-
-unsafe fn text(
-    dc: HDC,
-    value: &str,
-    rect: RECT,
-    font: HFONT,
-    colour: u32,
-    format: DRAW_TEXT_FORMAT,
-) {
-    unsafe {
-        let mut rect = rect;
-        let mut value: Vec<u16> = value.encode_utf16().collect();
-        SelectObject(dc, font);
-        SetTextColor(dc, colour);
-        DrawTextW(
-            dc,
-            value.as_mut_ptr(),
-            value.len() as i32,
-            &mut rect,
-            format | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | DT_END_ELLIPSIS,
-        );
-    }
 }
 
 unsafe fn paint(hwnd: HWND, state: &State) {

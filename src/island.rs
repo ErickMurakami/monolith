@@ -8,11 +8,11 @@ use crate::{
 };
 use std::{cell::Cell, ffi::c_void, io, mem::size_of, ptr::null_mut};
 use windows_sys::Win32::{
-    Foundation::{FILETIME, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
+    Foundation::{FILETIME, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM},
     Graphics::Gdi::*,
     System::{
         SystemInformation::{GetSystemTimeAsFileTime, GetTickCount64},
-        SystemServices::{SS_CENTERIMAGE, SS_ENDELLIPSIS, SS_NOTIFY, SS_OWNERDRAW, SS_RIGHT},
+        SystemServices::{SS_NOTIFY, SS_OWNERDRAW},
     },
     UI::{
         Accessibility::*,
@@ -49,6 +49,52 @@ thread_local! {
     static PENDING: Cell<bool> = const { Cell::new(false) };
 }
 
+/// Fonts for the painted Island, recreated when the DPI changes.
+struct Fonts {
+    body: HFONT,
+    strong: HFONT,
+    title: HFONT,
+    small: HFONT,
+    glyphs: HFONT,
+    large_glyphs: HFONT,
+    /// Solid transport symbols, which Segoe Fluent only offers as outlines.
+    symbols: HFONT,
+    large_symbols: HFONT,
+}
+
+impl Default for Fonts {
+    fn default() -> Self {
+        Self {
+            body: null_mut(),
+            strong: null_mut(),
+            title: null_mut(),
+            small: null_mut(),
+            glyphs: null_mut(),
+            large_glyphs: null_mut(),
+            symbols: null_mut(),
+            large_symbols: null_mut(),
+        }
+    }
+}
+
+impl Fonts {
+    fn release(&mut self) {
+        for font in [
+            self.body,
+            self.strong,
+            self.title,
+            self.small,
+            self.glyphs,
+            self.large_glyphs,
+            self.symbols,
+            self.large_symbols,
+        ] {
+            unsafe { DeleteObject(font) };
+        }
+        *self = Self::default();
+    }
+}
+
 pub struct Island {
     hwnd: HWND,
     hooks: Vec<HWINEVENTHOOK>,
@@ -61,7 +107,7 @@ struct State {
     controls: [HWND; 4],
     progress: HWND,
     artwork: HWND,
-    font: HFONT,
+    fonts: Fonts,
     dpi: u32,
     brush: HBRUSH,
     palette: Palette,
@@ -123,7 +169,7 @@ impl Island {
                     controls: [null_mut(); 4],
                     progress: null_mut(),
                     artwork: null_mut(),
-                    font: null_mut(),
+                    fonts: Fonts::default(),
                     dpi: 0,
                     brush: CreateSolidBrush(palette.background),
                     palette,
@@ -156,7 +202,7 @@ impl Island {
             );
             for (index, control) in island.state.controls.iter_mut().enumerate() {
                 let (class, style) = if index == 0 {
-                    ("STATIC", SS_NOTIFY | SS_CENTERIMAGE | SS_ENDELLIPSIS)
+                    ("STATIC", SS_NOTIFY | SS_OWNERDRAW)
                 } else {
                     ("BUTTON", BS_OWNERDRAW as u32)
                 };
@@ -181,7 +227,7 @@ impl Island {
             for (id, class, style) in [
                 (SHUFFLE, "BUTTON", BS_OWNERDRAW as u32),
                 (REPEAT, "BUTTON", BS_OWNERDRAW as u32),
-                (TIME, "STATIC", SS_RIGHT | SS_CENTERIMAGE),
+                (TIME, "STATIC", SS_OWNERDRAW),
             ] {
                 let child = CreateWindowExW(
                     0,
@@ -206,6 +252,14 @@ impl Island {
                     _ => island.state.time = child,
                 }
             }
+            // Rounded corners, so the expanded panel reads as one floating surface.
+            let corner = windows_sys::Win32::Graphics::Dwm::DWMWCP_ROUND;
+            windows_sys::Win32::Graphics::Dwm::DwmSetWindowAttribute(
+                hwnd,
+                windows_sys::Win32::Graphics::Dwm::DWMWA_WINDOW_CORNER_PREFERENCE as u32,
+                (&raw const corner).cast(),
+                size_of::<i32>() as u32,
+            );
             island.state.media = Some(Media::connect(hwnd)?);
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, (&raw mut *island.state) as isize);
             TARGET.set(hwnd);
@@ -318,19 +372,34 @@ unsafe extern "system" fn progress_proc(
                 let mut bounds = RECT::default();
                 GetClientRect(hwnd, &mut bounds);
                 let fraction = DefSubclassProc(hwnd, PBM_GETPOS, 0, 0).clamp(0, 1000) as i32;
-                let brush = GetStockObject(DC_BRUSH) as HBRUSH;
-                let previous = SetDCBrushColor(dc, palette.background);
-                FillRect(dc, &bounds, brush);
-                // Draw a thin bar centred in the taller hit area.
-                let thickness = overlay::scale(3, GetDpiForWindow(hwnd));
-                bounds.top += (bounds.bottom - bounds.top - thickness) / 2;
-                bounds.bottom = bounds.top + thickness;
-                SetDCBrushColor(dc, palette.surface);
-                FillRect(dc, &bounds, brush);
-                bounds.right = bounds.left + (bounds.right - bounds.left) * fraction / 1000;
-                SetDCBrushColor(dc, palette.accent);
-                FillRect(dc, &bounds, brush);
-                SetDCBrushColor(dc, previous);
+                overlay::fill(dc, &bounds, palette.background);
+                // A rounded track centred in the taller hit area, with a knob at
+                // the playback position, inset so the knob never clips.
+                let dpi = GetDpiForWindow(hwnd);
+                let thickness = overlay::scale(4, dpi);
+                let knob = overlay::scale(12, dpi);
+                let middle = (bounds.top + bounds.bottom) / 2;
+                let track = RECT {
+                    left: bounds.left + knob / 2,
+                    top: middle - thickness / 2,
+                    right: bounds.right - knob / 2,
+                    bottom: middle - thickness / 2 + thickness,
+                };
+                let track_colour = overlay::mix(palette.background, palette.text, 18);
+                overlay::rounded(dc, &track, thickness / 2, track_colour, None);
+                let position = track.left + (track.right - track.left) * fraction / 1000;
+                let played = RECT {
+                    right: position.max(track.left + thickness),
+                    ..track
+                };
+                overlay::rounded(dc, &played, thickness / 2, palette.accent, None);
+                let handle = RECT {
+                    left: position - knob / 2,
+                    top: middle - knob / 2,
+                    right: position - knob / 2 + knob,
+                    bottom: middle - knob / 2 + knob,
+                };
+                overlay::rounded(dc, &handle, knob / 2, palette.text, None);
                 EndPaint(hwnd, &paint);
                 return 0;
             }
@@ -354,7 +423,7 @@ impl Drop for Island {
             }
             DestroyWindow(self.hwnd);
             DeleteObject(self.state.brush);
-            DeleteObject(self.state.font);
+            self.state.fonts.release();
         }
     }
 }
@@ -423,9 +492,9 @@ unsafe fn layout(hwnd: HWND, state: *mut State) {
         let expanded = (*state).expanded;
         let artwork_view = (*state).artwork;
         if let Some(media) = (*state).media.as_ref() {
-            media.request_artwork(expanded && !artwork_view.is_null());
+            media.request_artwork(!artwork_view.is_null());
         }
-        let show_artwork = expanded && current.artwork.is_some() && !artwork_view.is_null();
+        let show_artwork = current.artwork.is_some() && !artwork_view.is_null();
         let title = match (current.title.is_empty(), current.artist.is_empty()) {
             (true, _) => current.artist.clone(),
             (_, true) => current.title.clone(),
@@ -447,48 +516,53 @@ unsafe fn layout(hwnd: HWND, state: *mut State) {
         let dpi = GetDpiForWindow(hwnd);
         let scale = |value| overlay::scale(value, dpi);
         if (*state).dpi != dpi {
-            let font = CreateFontW(
-                -scale(13),
-                0,
-                0,
-                0,
-                FW_NORMAL as i32,
-                0,
-                0,
-                0,
-                1,
-                0,
-                0,
-                0,
-                0,
-                wide("Segoe UI").as_ptr(),
-            );
-            if !font.is_null() {
-                for child in controls.into_iter().chain(extras).chain([time]) {
-                    SendMessageW(child, WM_SETFONT, font as usize, 0);
-                }
-                DeleteObject((*state).font);
-                (*state).font = font;
-                (*state).dpi = dpi;
+            let create = |size, weight: u32, face: &str| {
+                CreateFontW(
+                    -scale(size),
+                    0,
+                    0,
+                    0,
+                    weight as i32,
+                    0,
+                    0,
+                    0,
+                    1,
+                    0,
+                    0,
+                    CLEARTYPE_QUALITY as u32,
+                    0,
+                    wide(face).as_ptr(),
+                )
+            };
+            let fonts = Fonts {
+                body: create(13, FW_NORMAL, "Segoe UI"),
+                strong: create(13, FW_SEMIBOLD, "Segoe UI"),
+                title: create(16, FW_SEMIBOLD, "Segoe UI"),
+                small: create(12, FW_NORMAL, "Segoe UI"),
+                glyphs: create(16, FW_NORMAL, "Segoe Fluent Icons"),
+                large_glyphs: create(20, FW_NORMAL, "Segoe Fluent Icons"),
+                symbols: create(17, FW_NORMAL, "Segoe UI Symbol"),
+                large_symbols: create(19, FW_NORMAL, "Segoe UI Symbol"),
+            };
+            for child in controls.into_iter().chain(extras).chain([time]) {
+                SendMessageW(child, WM_SETFONT, fonts.body as usize, 0);
             }
+            (*state).fonts.release();
+            (*state).fonts = fonts;
+            (*state).dpi = dpi;
         }
         let work = info.rcWork;
         let work_width = (work.right - work.left).max(1);
-        let width = scale(346).min(work_width.saturating_sub(scale(16))).max(1);
-        let label_height = scale(if show_artwork { 37 } else { 27 });
-        let height = if show_progress {
-            label_height + scale(46)
-        } else if expanded {
-            label_height + scale(36)
+        // Both states share one width so expanding only animates the height.
+        let width = scale(372).min(work_width.saturating_sub(scale(16))).max(1);
+        let band = scale(27);
+        let inset = scale(16);
+        let art = scale(64);
+        let row_top = inset + art + scale(if show_progress { 48 } else { 16 });
+        let height = if expanded {
+            row_top + scale(44) + scale(12)
         } else {
-            label_height
-        };
-        let inset = scale(8);
-        let artwork_size = scale(28);
-        let label_left = if show_artwork {
-            inset + artwork_size + scale(7)
-        } else {
-            inset
+            band
         };
         let left = work.left + (work_width - width) / 2;
         let mut top = work.top + scale(4);
@@ -503,31 +577,49 @@ unsafe fn layout(hwnd: HWND, state: *mut State) {
                 };
             }
         }
-        SetWindowTextW(controls[0], wide(&title).as_ptr());
-        if show_artwork {
+        let place = |child: HWND, x: i32, y: i32, w: i32, h: i32| {
             SetWindowPos(
-                artwork_view,
+                child,
                 null_mut(),
-                inset,
-                (label_height - artwork_size) / 2,
-                artwork_size,
-                artwork_size,
-                SWP_SHOWWINDOW | SWP_NOZORDER | SWP_NOACTIVATE,
+                x,
+                y,
+                w.max(1),
+                h.max(1),
+                SWP_SHOWWINDOW | SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOCOPYBITS,
             );
-            InvalidateRect(artwork_view, std::ptr::null(), 1);
-        } else if !artwork_view.is_null() {
+            InvalidateRect(child, std::ptr::null(), 0);
+        };
+        SetWindowTextW(controls[0], wide(&title).as_ptr());
+        let thumb = scale(19);
+        let label_left = if !show_artwork {
+            if expanded { inset } else { scale(10) }
+        } else if expanded {
+            place(artwork_view, inset, inset, art, art);
+            inset + art + scale(14)
+        } else {
+            place(artwork_view, scale(6), (band - thumb) / 2, thumb, thumb);
+            scale(6) + thumb + scale(8)
+        };
+        if !show_artwork && !artwork_view.is_null() {
             ShowWindow(artwork_view, SW_HIDE);
         }
-        SetWindowPos(
-            controls[0],
-            null_mut(),
-            label_left,
-            0,
-            (width - label_left - inset).max(1),
-            label_height,
-            SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW | SWP_NOCOPYBITS,
-        );
-        InvalidateRect(controls[0], std::ptr::null(), 1);
+        if expanded {
+            place(
+                controls[0],
+                label_left,
+                inset,
+                width - label_left - inset,
+                art,
+            );
+        } else {
+            place(
+                controls[0],
+                label_left,
+                0,
+                width - label_left - band - scale(6),
+                band,
+            );
+        }
         let portuguese = (*state).portuguese;
         let captions = match (portuguese, playing) {
             (false, true) => ["Previous", "Pause", "Next"],
@@ -535,75 +627,76 @@ unsafe fn layout(hwnd: HWND, state: *mut State) {
             (true, true) => ["Anterior", "Pausar", "Próxima"],
             (true, false) => ["Anterior", "Reproduzir", "Próxima"],
         };
-        // Shuffle and repeat flank the transport controls only when supported.
-        let mut row: Vec<(HWND, String, bool)> = Vec::with_capacity(5);
-        if let Some(active) = shuffle.filter(|_| expanded) {
-            let caption = match (portuguese, active) {
-                (false, false) => "Shuffle",
-                (false, true) => "Shuffle ●",
-                (true, false) => "Aleatório",
-                (true, true) => "Aleatório ●",
-            };
-            row.push((extras[0], caption.to_owned(), true));
-        } else {
-            ShowWindow(extras[0], SW_HIDE);
-        }
         for (index, &button) in controls.iter().skip(1).enumerate() {
-            if expanded {
-                row.push((button, captions[index].to_owned(), availability[index]));
-            } else {
-                ShowWindow(button, SW_HIDE);
+            SetWindowTextW(button, wide(captions[index]).as_ptr());
+            EnableWindow(button, i32::from(availability[index]));
+        }
+        // Transport sits in five fixed slots so it stays centred whether or not
+        // shuffle and repeat are supported.
+        let slot = (width - 2 * inset) / 5;
+        let in_slot = |index: i32, side: i32| {
+            (
+                inset + slot * index + (slot - side) / 2,
+                row_top + (scale(44) - side) / 2,
+            )
+        };
+        if expanded {
+            for (index, &button) in controls.iter().skip(1).enumerate() {
+                let side = scale(if index == 1 { 44 } else { 40 });
+                let (x, y) = in_slot(index as i32 + 1, side);
+                place(button, x, y, side, side);
             }
-        }
-        if let Some(mode) = repeat.filter(|_| expanded) {
-            let caption = match (portuguese, mode) {
-                (false, Repeat::Off) => "Repeat",
-                (false, Repeat::List) => "Repeat all",
-                (false, Repeat::Track) => "Repeat one",
-                (true, Repeat::Off) => "Repetir",
-                (true, Repeat::List) => "Repetir tudo",
-                (true, Repeat::Track) => "Repetir uma",
-            };
-            row.push((extras[1], caption.to_owned(), true));
         } else {
-            ShowWindow(extras[1], SW_HIDE);
+            ShowWindow(controls[1], SW_HIDE);
+            ShowWindow(controls[3], SW_HIDE);
+            place(controls[2], width - band - scale(6), 0, band, band);
         }
-        let step = (width - 2 * inset).max(row.len().max(1) as i32) / row.len().max(1) as i32;
-        for (index, (button, caption, enabled)) in row.into_iter().enumerate() {
-            SetWindowTextW(button, wide(&caption).as_ptr());
-            EnableWindow(button, i32::from(enabled));
-            SetWindowPos(
-                button,
-                null_mut(),
-                inset + step * index as i32,
-                label_height + scale(3),
-                (step - scale(3)).max(1),
-                scale(27),
-                SWP_SHOWWINDOW | SWP_NOZORDER | SWP_NOACTIVATE,
-            );
-            InvalidateRect(button, std::ptr::null(), 1);
+        let shuffle_caption = shuffle.map(|active| match (portuguese, active) {
+            (false, false) => "Shuffle",
+            (false, true) => "Shuffle ●",
+            (true, false) => "Aleatório",
+            (true, true) => "Aleatório ●",
+        });
+        let repeat_caption = repeat.map(|mode| match (portuguese, mode) {
+            (false, Repeat::Off) => "Repeat",
+            (false, Repeat::List) => "Repeat all",
+            (false, Repeat::Track) => "Repeat one",
+            (true, Repeat::Off) => "Repetir",
+            (true, Repeat::List) => "Repetir tudo",
+            (true, Repeat::Track) => "Repetir uma",
+        });
+        for (button, caption, index) in [
+            (extras[0], shuffle_caption, 0),
+            (extras[1], repeat_caption, 4),
+        ] {
+            match caption.filter(|_| expanded) {
+                Some(caption) => {
+                    SetWindowTextW(button, wide(caption).as_ptr());
+                    let side = scale(40);
+                    let (x, y) = in_slot(index, side);
+                    place(button, x, y, side, side);
+                }
+                None => {
+                    ShowWindow(button, SW_HIDE);
+                }
+            }
         }
         let progress = (*state).progress;
         if show_progress {
             // A taller hit area than the drawn bar makes seeking practical.
-            let time_width = scale(84);
-            SetWindowPos(
+            place(
                 progress,
-                null_mut(),
                 inset,
-                label_height + scale(31),
-                (width - 2 * inset - time_width - scale(6)).max(1),
-                scale(11),
-                SWP_SHOWWINDOW | SWP_NOZORDER | SWP_NOACTIVATE,
+                inset + art + scale(12),
+                width - 2 * inset,
+                scale(14),
             );
-            SetWindowPos(
+            place(
                 time,
-                null_mut(),
-                width - inset - time_width,
-                label_height + scale(30),
-                time_width,
-                scale(13),
-                SWP_SHOWWINDOW | SWP_NOZORDER | SWP_NOACTIVATE,
+                inset,
+                inset + art + scale(26),
+                width - 2 * inset,
+                scale(16),
             );
         } else {
             if !progress.is_null() {
@@ -717,6 +810,157 @@ unsafe fn update_progress(hwnd: HWND, state: *mut State) {
     }
 }
 
+/// Paint the Island's controls: artwork with rounded corners, the title block,
+/// elapsed and total time, and monochrome transport glyphs. Window texts stay as
+/// the controls' accessible names.
+unsafe fn draw_item(state: &State, item: &DRAWITEMSTRUCT) {
+    unsafe {
+        let dc = item.hDC;
+        let rect = item.rcItem;
+        let palette = state.palette;
+        let fonts = &state.fonts;
+        let dpi = state.dpi;
+        let scale = |value| overlay::scale(value, dpi);
+        let secondary = overlay::mix(palette.text, palette.background, 35);
+        let muted = overlay::mix(palette.text, palette.background, 55);
+        overlay::fill(dc, &rect, palette.background);
+        SetBkMode(dc, TRANSPARENT as i32);
+        let Some(current) = state.current.as_ref() else {
+            return;
+        };
+        let line = |value: &str, area: RECT, font, colour, format| {
+            overlay::text(dc, value, area, font, colour, format)
+        };
+        match item.CtlID as usize {
+            ARTWORK => {
+                let Some(artwork) = current.artwork.as_ref() else {
+                    return;
+                };
+                let radius = scale(if state.expanded { 12 } else { 5 });
+                let region = CreateRoundRectRgn(
+                    rect.left,
+                    rect.top,
+                    rect.right + 1,
+                    rect.bottom + 1,
+                    2 * radius,
+                    2 * radius,
+                );
+                SelectClipRgn(dc, region);
+                artwork.draw(dc, rect, palette.background);
+                SelectClipRgn(dc, null_mut());
+                DeleteObject(region);
+            }
+            LABEL if state.expanded => {
+                let rows = [
+                    (current.title.as_str(), fonts.title, palette.text, scale(24)),
+                    (current.artist.as_str(), fonts.body, secondary, scale(20)),
+                    (current.album.as_str(), fonts.body, muted, scale(20)),
+                ];
+                let filled: Vec<_> = rows.iter().filter(|row| !row.0.is_empty()).collect();
+                let total: i32 = filled.iter().map(|row| row.3).sum();
+                let mut top = rect.top + (rect.bottom - rect.top - total) / 2;
+                for (value, font, colour, height) in filled {
+                    let area = RECT {
+                        top,
+                        bottom: top + height,
+                        ..rect
+                    };
+                    line(value, area, *font, *colour, DT_LEFT);
+                    top += height;
+                }
+            }
+            LABEL => {
+                // Compact: the title in semibold, then the artist in a quieter tone.
+                let title: Vec<u16> = current.title.encode_utf16().collect();
+                SelectObject(dc, fonts.strong);
+                let mut size = SIZE::default();
+                GetTextExtentPoint32W(dc, title.as_ptr(), title.len() as i32, &mut size);
+                let width = rect.right - rect.left;
+                let title_width = if current.artist.is_empty() {
+                    width
+                } else {
+                    size.cx.min(width * 2 / 3)
+                };
+                line(
+                    &current.title,
+                    RECT {
+                        right: rect.left + title_width,
+                        ..rect
+                    },
+                    fonts.strong,
+                    palette.text,
+                    DT_LEFT,
+                );
+                if !current.artist.is_empty() {
+                    line(
+                        &current.artist,
+                        RECT {
+                            left: rect.left + title_width + scale(8),
+                            ..rect
+                        },
+                        fonts.body,
+                        secondary,
+                        DT_LEFT,
+                    );
+                }
+            }
+            TIME => {
+                let mut buffer = [0_u16; 64];
+                let length =
+                    GetWindowTextW(item.hwndItem, buffer.as_mut_ptr(), buffer.len() as i32);
+                let value = String::from_utf16_lossy(&buffer[..length.max(0) as usize]);
+                let (elapsed, total) = value.split_once(" / ").unwrap_or((&value, ""));
+                line(elapsed, rect, fonts.small, secondary, DT_LEFT);
+                line(total, rect, fonts.small, secondary, DT_RIGHT);
+            }
+            id => {
+                let disabled = item.itemState & ODS_DISABLED != 0;
+                let pressed = item.itemState & ODS_SELECTED != 0;
+                let (glyph, active) = match id {
+                    PREVIOUS => ("\u{23EE}", false),
+                    NEXT => ("\u{23ED}", false),
+                    TOGGLE if current.playing => ("\u{23F8}", false),
+                    TOGGLE => ("\u{25B6}", false),
+                    SHUFFLE => ("\u{E8B1}", current.shuffle == Some(true)),
+                    REPEAT if current.repeat == Some(Repeat::Track) => ("\u{E8ED}", true),
+                    REPEAT => ("\u{E8EE}", current.repeat == Some(Repeat::List)),
+                    _ => return,
+                };
+                let prominent = id == TOGGLE && state.expanded;
+                if prominent || pressed {
+                    let side = (rect.right - rect.left).min(rect.bottom - rect.top);
+                    let circle = RECT {
+                        left: rect.left + (rect.right - rect.left - side) / 2,
+                        top: rect.top + (rect.bottom - rect.top - side) / 2,
+                        right: rect.left + (rect.right - rect.left + side) / 2,
+                        bottom: rect.top + (rect.bottom - rect.top + side) / 2,
+                    };
+                    let colour = if pressed {
+                        palette.pressed
+                    } else {
+                        palette.surface
+                    };
+                    overlay::rounded(dc, &circle, side / 2, colour, None);
+                }
+                let colour = if disabled {
+                    muted
+                } else if active {
+                    palette.accent
+                } else {
+                    palette.text
+                };
+                let transport = matches!(id, PREVIOUS | NEXT | TOGGLE);
+                let font = match (transport, prominent) {
+                    (true, true) => fonts.large_symbols,
+                    (true, false) => fonts.symbols,
+                    (false, _) => fonts.glyphs,
+                };
+                line(glyph, rect, font, colour, DT_CENTER);
+            }
+        }
+    }
+}
+
 unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     unsafe {
         let state = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut State;
@@ -793,19 +1037,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                 (*state).brush as isize
             }
             WM_DRAWITEM if lp != 0 => {
-                let item = &*(lp as *const DRAWITEMSTRUCT);
-                if item.CtlID as usize == ARTWORK {
-                    FillRect(item.hDC, &item.rcItem, (*state).brush);
-                    if let Some(artwork) = (*state)
-                        .current
-                        .as_ref()
-                        .and_then(|current| current.artwork.as_ref())
-                    {
-                        artwork.draw(item.hDC, item.rcItem, (*state).palette.background);
-                    }
-                } else {
-                    overlay::paint_button(item, (*state).palette, (*state).font);
-                }
+                draw_item(&*state, &*(lp as *const DRAWITEMSTRUCT));
                 1
             }
             WM_MOUSEACTIVATE => MA_NOACTIVATE as LRESULT,

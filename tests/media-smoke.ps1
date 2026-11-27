@@ -133,7 +133,10 @@ session.setActionHandler('previoustrack', () => {
     $artwork = [DesktopSmoke]::GetDlgItem($island, 5)
     if (([DesktopSmoke]::Style($island, -16) -band 0x00CF0000) -or
         !([DesktopSmoke]::Style($island, -20) -band 0x80)) { throw 'The media Island has a conventional frame.' }
-    if ([DesktopSmoke]::IsWindowVisible($artwork)) { throw 'Artwork appeared in the collapsed surface.' }
+    # The compact Island shows small artwork (DESIGN.md section 6) that fits its band.
+    Wait-Until { [DesktopSmoke]::IsWindowVisible($artwork) } 'The compact Island did not show small artwork.'
+    $small = [DesktopSmoke]::Bounds($artwork)
+    if ($small[1] -lt $compact[1] -or $small[3] -gt $compact[3]) { throw 'The compact artwork does not fit the compact Island.' }
     if (![DesktopSmoke]::Click($label)) { throw 'Could not expand the media controls.' }
     $toggle = [DesktopSmoke]::FindWindowEx($island, [IntPtr]::Zero, 'Button', 'Pause')
     if (![DesktopSmoke]::IsWindowVisible($toggle)) { throw 'The expanded media controls are not visible.' }
