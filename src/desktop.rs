@@ -398,6 +398,20 @@ pub fn foreground_covers_monitor(monitor: HMONITOR, bounds: &RECT) -> bool {
     foreground_on_monitor(monitor).is_some_and(|hwnd| covers_display(hwnd, bounds))
 }
 
+/// Whether DWM hides `hwnd`, as it does for windows on another virtual desktop.
+pub fn is_cloaked(hwnd: HWND) -> bool {
+    let mut cloaked = 0_u32;
+    let status = unsafe {
+        DwmGetWindowAttribute(
+            hwnd,
+            DWMWA_CLOAKED as u32,
+            (&raw mut cloaked).cast(),
+            size_of::<u32>() as u32,
+        )
+    };
+    status >= 0 && cloaked != 0
+}
+
 /// Whether `hwnd` is a visible, eligible window covering its whole monitor.
 pub fn is_fullscreen(hwnd: HWND) -> bool {
     unsafe {

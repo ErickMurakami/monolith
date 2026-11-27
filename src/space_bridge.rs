@@ -16,7 +16,7 @@ use std::{
     io,
     mem::size_of,
     ptr::null_mut,
-    sync::mpsc,
+    sync::{atomic::Ordering, mpsc},
     thread::{self, JoinHandle},
 };
 use windows_sys::Win32::{
@@ -37,6 +37,9 @@ const RELEASE: u32 = WM_APP + 1;
 const LOGO_UP: u32 = WM_APP + 2;
 const BEGIN: u32 = WM_APP + 3;
 const WINDOW_CHANGED: u32 = WM_APP + 4;
+const MOVE_WINDOW: u32 = WM_APP + 5;
+/// Thread ID of the desktop worker, or zero while it is not running.
+static DESKTOP_THREAD: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 const POLL_MS: u32 = 10;
 /// Replay to whichever window has focus if Spotlight never reports.
 const CAPTURE_LIMIT_MS: u32 = 1500;
@@ -169,7 +172,6 @@ impl Machine {
 
 thread_local! {
     static MACHINE: RefCell<Machine> = RefCell::default();
-    static MOVER: RefCell<Option<crate::virtual_desktops::Mover>> = const { RefCell::new(None) };
     static THREAD: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
 }
 
@@ -231,39 +233,13 @@ unsafe fn run(ready: mpsc::Sender<io::Result<u32>>) {
             return;
         }
         THREAD.set(GetCurrentThreadId());
-        // The private desktop adapter needs COM; it disables itself if its gates fail.
+        // Desktop moves and fullscreen workspaces run on their own thread, so slow
+        // desktop work can never make Windows time out and remove this keyboard hook.
         let (moves, fullscreen) =
             MACHINE.with_borrow(|machine| (machine.chords.moves, machine.chords.fullscreen));
-        let moves = moves || fullscreen;
-        let apartment = moves
-            && windows::Win32::System::Com::CoInitializeEx(
-                None,
-                windows::Win32::System::Com::COINIT_APARTMENTTHREADED,
-            )
-            .is_ok();
-        if moves {
-            MOVER.set(crate::virtual_desktops::Mover::connect());
-        }
-        // Fullscreen detection follows foreground and window geometry changes.
-        let mut spaces = crate::workspaces::FullscreenSpaces::default();
-        let mut fullscreen_hooks = Vec::new();
-        if fullscreen && MOVER.with_borrow(Option::is_some) {
-            for event in [EVENT_SYSTEM_FOREGROUND, EVENT_OBJECT_LOCATIONCHANGE] {
-                let hook = SetWinEventHook(
-                    event,
-                    event,
-                    null_mut(),
-                    Some(window_changed),
-                    0,
-                    0,
-                    WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS,
-                );
-                if !hook.is_null() {
-                    fullscreen_hooks.push(hook);
-                }
-            }
-        }
-        let mut fullscreen_timer = 0;
+        let desktop_worker = (moves || fullscreen)
+            .then(|| start_desktop_worker(fullscreen))
+            .flatten();
         let _ = ready.send(Ok(GetCurrentThreadId()));
         let mut logo_timer = 0;
         let mut logo_waited = 0;
@@ -290,18 +266,6 @@ unsafe fn run(ready: mpsc::Sender<io::Result<u32>>) {
                         replay(&MACHINE.with_borrow_mut(Machine::release));
                     }
                 }
-                WINDOW_CHANGED if fullscreen_timer == 0 => {
-                    fullscreen_timer = SetTimer(null_mut(), 0, 300, None);
-                }
-                WM_TIMER if msg.wParam == fullscreen_timer && fullscreen_timer != 0 => {
-                    KillTimer(null_mut(), fullscreen_timer);
-                    fullscreen_timer = 0;
-                    MOVER.with_borrow(|mover| {
-                        if let Some(mover) = mover {
-                            spaces.check(mover);
-                        }
-                    });
-                }
                 RELEASE => {
                     finish(&mut capture_timer);
                 }
@@ -318,17 +282,104 @@ unsafe fn run(ready: mpsc::Sender<io::Result<u32>>) {
             }
         }
         UnhookWindowsHookEx(hook);
-        for hook in fullscreen_hooks {
-            UnhookWinEvent(hook);
-        }
-        MOVER.set(None);
-        if apartment {
-            windows::Win32::System::Com::CoUninitialize();
+        // Stop the desktop worker; it releases the adapter and its hooks itself.
+        if let Some(worker) = desktop_worker {
+            PostThreadMessageW(DESKTOP_THREAD.load(Ordering::Acquire), WM_QUIT, 0, 0);
+            let _ = worker.join();
         }
         if logo_timer != 0 {
             KillTimer(null_mut(), logo_timer);
         }
         finish(&mut capture_timer);
+    }
+}
+
+/// Start the thread that owns the virtual desktop adapter. None when the adapter's
+/// gates fail, in which case moves and fullscreen workspaces stay off.
+fn start_desktop_worker(fullscreen: bool) -> Option<JoinHandle<()>> {
+    let (ready, started) = mpsc::channel();
+    let worker = thread::Builder::new()
+        .name("monolith-desktops".into())
+        .spawn(move || unsafe { run_desktop_worker(fullscreen, ready) })
+        .ok()?;
+    match started.recv() {
+        Ok(true) => Some(worker),
+        _ => {
+            let _ = worker.join();
+            None
+        }
+    }
+}
+
+unsafe fn run_desktop_worker(fullscreen: bool, ready: mpsc::Sender<bool>) {
+    use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx, CoUninitialize};
+    unsafe {
+        let mut msg = MSG::default();
+        PeekMessageW(&mut msg, null_mut(), WM_USER, WM_USER, PM_NOREMOVE);
+        let apartment = CoInitializeEx(None, COINIT_APARTMENTTHREADED).is_ok();
+        let Some(mover) = crate::virtual_desktops::Mover::connect() else {
+            let _ = ready.send(false);
+            if apartment {
+                CoUninitialize();
+            }
+            return;
+        };
+        DESKTOP_THREAD.store(GetCurrentThreadId(), Ordering::Release);
+        // Fullscreen detection follows foreground and window geometry changes.
+        let mut hooks = Vec::new();
+        if fullscreen {
+            for event in [EVENT_SYSTEM_FOREGROUND, EVENT_OBJECT_LOCATIONCHANGE] {
+                let hook = SetWinEventHook(
+                    event,
+                    event,
+                    null_mut(),
+                    Some(window_changed),
+                    0,
+                    0,
+                    WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS,
+                );
+                if !hook.is_null() {
+                    hooks.push(hook);
+                }
+            }
+        }
+        let _ = ready.send(true);
+        let mut spaces = crate::workspaces::FullscreenSpaces::default();
+        let mut timer = 0;
+        while GetMessageW(&mut msg, null_mut(), 0, 0) > 0 {
+            match msg.message {
+                WINDOW_CHANGED if timer == 0 => {
+                    timer = SetTimer(null_mut(), 0, 300, None);
+                }
+                WM_TIMER if msg.wParam == timer && timer != 0 => {
+                    KillTimer(null_mut(), timer);
+                    timer = 0;
+                    spaces.check(&mover);
+                }
+                MOVE_WINDOW => {
+                    mover.move_window(
+                        windows::Win32::Foundation::HWND(msg.lParam as _),
+                        msg.wParam,
+                    );
+                }
+                _ => {
+                    TranslateMessage(&msg);
+                    DispatchMessageW(&msg);
+                }
+            }
+        }
+        for hook in hooks {
+            UnhookWinEvent(hook);
+        }
+        if timer != 0 {
+            KillTimer(null_mut(), timer);
+        }
+        DESKTOP_THREAD.store(0, Ordering::Release);
+        drop(spaces);
+        drop(mover);
+        if apartment {
+            CoUninitialize();
+        }
     }
 }
 
@@ -364,14 +415,13 @@ unsafe fn try_run_action(timer: &mut usize, waited: &mut u32) {
             }
             Action::MoveTo(index) => {
                 // The window that had focus when the chord was pressed keeps it now.
-                MOVER.with_borrow(|mover| {
-                    if let Some(mover) = mover {
-                        mover.move_window(
-                            windows::Win32::Foundation::HWND(GetForegroundWindow()),
-                            usize::from(index),
-                        );
-                    }
-                });
+                // The desktop worker performs the move off this hook thread.
+                PostThreadMessageW(
+                    DESKTOP_THREAD.load(Ordering::Acquire),
+                    MOVE_WINDOW,
+                    usize::from(index),
+                    GetForegroundWindow() as isize,
+                );
                 true
             }
         };
@@ -442,7 +492,7 @@ unsafe extern "system" fn window_changed(
     _: u32,
 ) {
     if object == OBJID_WINDOW && child == 0 && !hwnd.is_null() {
-        unsafe { PostThreadMessageW(THREAD.get(), WINDOW_CHANGED, 0, 0) };
+        unsafe { PostThreadMessageW(DESKTOP_THREAD.load(Ordering::Acquire), WINDOW_CHANGED, 0, 0) };
     }
 }
 

@@ -47,12 +47,16 @@ $oldLocal = $env:LOCALAPPDATA
 $env:LOCALAPPDATA = $configRoot
 $launcher = $null
 $created = [Guid]::Empty
+$helper = $null
 $fixture = New-Object Windows.Forms.Form
 $fixture.Text = 'Monolith fullscreen fixture'
 try {
     $launcher = Start-Process -FilePath $application -ArgumentList '--resident' -PassThru
     Wait-Until { [DesktopSmoke]::FindClass('MonolithSpotlight') -ne [IntPtr]::Zero } 'Monolith did not start.'
     Start-Sleep -Milliseconds 500
+    $helper = New-Object Windows.Forms.Form
+    $helper.Text = 'Monolith fullscreen helper'
+    $helper.Show()
     $fixture.Show()
     Focus-Fixture $fixture
     $fixture.FormBorderStyle = 'None'
@@ -64,6 +68,15 @@ try {
     } 'The fullscreen window did not get a desktop of its own.' 8
     $created = (Get-Desktops).Current
     'Entering fullscreen moved the window to a new desktop of its own.'
+    # Switching away must leave the fullscreen window on its own desktop.
+    Send-Desktop $(if ([Array]::IndexOf((Get-Desktops).Ids, $origin.Current) -lt [Array]::IndexOf((Get-Desktops).Ids, $created)) { 0x25 } else { 0x27 })
+    Wait-Until { (Get-Desktops).Current -eq $origin.Current } 'Could not switch back to the original desktop.'
+    Start-Sleep -Milliseconds 1500
+    if ([MoveSmoke]::DesktopId($fixture.Handle) -ne $created -or (Get-Desktops).Current -ne $origin.Current) { throw 'Switching away pulled the fullscreen window back.' }
+    'Switching away left the fullscreen window on its own desktop.'
+    Focus-Fixture $helper
+    Send-Desktop $(if ([Array]::IndexOf((Get-Desktops).Ids, $created) -lt [Array]::IndexOf((Get-Desktops).Ids, $origin.Current)) { 0x25 } else { 0x27 })
+    Wait-Until { (Get-Desktops).Current -eq $created } 'Could not return to the fullscreen desktop.'
     $fixture.FormBorderStyle = 'Sizable'
     $fixture.Bounds = [Drawing.Rectangle]::new(200, 200, 640, 400)
     Wait-Until {
@@ -76,6 +89,7 @@ try {
 } finally {
     if ($launcher -and !$launcher.HasExited) { Stop-Process -InputObject $launcher -ErrorAction SilentlyContinue }
     $fixture.Dispose()
+    if ($helper) { $helper.Dispose() }
     $env:LOCALAPPDATA = $oldLocal
     Remove-Item -LiteralPath $configRoot -Recurse -Force -ErrorAction SilentlyContinue
     $cleanup = New-Object Windows.Forms.Form

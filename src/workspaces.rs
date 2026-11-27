@@ -412,7 +412,13 @@ pub struct FullscreenSpaces {
 impl FullscreenSpaces {
     pub fn check(&mut self, mover: &crate::virtual_desktops::Mover) {
         use windows_sys::Win32::Foundation::HWND;
-        let fullscreen = |window: isize| crate::desktop::is_fullscreen(window as HWND);
+        // A tracked window on another desktop is cloaked, which says nothing about
+        // fullscreen; only a closed window or a visible non-fullscreen one returns.
+        let fullscreen = |window: isize| {
+            let hwnd = window as HWND;
+            (unsafe { windows_sys::Win32::UI::WindowsAndMessaging::IsWindow(hwnd) } != 0)
+                && (crate::desktop::is_cloaked(hwnd) || crate::desktop::is_fullscreen(hwnd))
+        };
         // Each step changes desktop state, so re-plan after every one; bound the work.
         for _ in 0..4 {
             let current = read()
