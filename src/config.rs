@@ -29,6 +29,9 @@ pub struct Config {
     pub fullscreen_workspaces: bool,
     /// Experimental: close empty desktops automatically, keeping one empty desktop.
     pub close_empty_workspaces: bool,
+    /// Experimental: three-finger horizontal swipes on a precision touchpad switch
+    /// desktops. Set the Windows three-finger gesture to "Nothing" to avoid both acting.
+    pub touchpad_gestures: bool,
     pub dock: bool,
     pub dock_pins: Vec<String>,
     pub dock_monitor: DockMonitor,

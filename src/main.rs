@@ -33,6 +33,8 @@ mod files;
 #[cfg(windows)]
 mod files_directory;
 #[cfg(windows)]
+mod gestures;
+#[cfg(windows)]
 mod hotkey;
 #[cfg(windows)]
 mod icons;

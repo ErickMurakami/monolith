@@ -82,6 +82,7 @@ struct SurfaceOptions {
     island: bool,
     notifications: bool,
     hide_notification_content: bool,
+    touchpad_gestures: bool,
     control_center: bool,
     mission: bool,
 }
@@ -363,6 +364,7 @@ pub fn run() -> io::Result<()> {
                 notifications: !safe
                     && (settings.notifications || args.iter().any(|arg| arg == "--notifications")),
                 hide_notification_content: settings.hide_notification_content,
+                touchpad_gestures: !safe && settings.touchpad_gestures,
                 control_center: !safe && args.iter().any(|arg| arg == "--control-center"),
                 mission: !safe && args.iter().any(|arg| arg == "--mission-control"),
             },
@@ -497,6 +499,18 @@ unsafe fn run_window(
             None
         };
         // Lives until the GUI loop ends; dropping it removes the hook and stops the worker.
+        // Lives until the GUI loop ends; dropping it stops the gesture thread.
+        let _gestures = if surfaces.touchpad_gestures {
+            match crate::gestures::Gestures::start() {
+                Ok(gestures) => Some(gestures),
+                Err(error) => {
+                    report(&format!("Could not start touchpad gestures ({error})"));
+                    None
+                }
+            }
+        } else {
+            None
+        };
         let notifications = if surfaces.notifications {
             match Notifications::new(
                 instance,
