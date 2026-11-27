@@ -476,4 +476,82 @@ mod tests {
         assert_eq!(fs::read(source).unwrap(), b"keep");
         assert!(!fixture.destination("cancel.txt").exists());
     }
+
+    /// A uniquely named folder on another volume, removed only if the name still matches.
+    struct Remote(PathBuf);
+
+    impl Drop for Remote {
+        fn drop(&mut self) {
+            if self
+                .0
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("monolith-transfer-"))
+            {
+                let _ = fs::remove_dir_all(&self.0);
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "needs a second fixed volume D: or the running archlinux WSL distribution"]
+    fn transfers_across_volumes_and_into_wsl() {
+        let mut exercised = 0;
+        for (index, root) in [r"D:\", r"\\wsl.localhost\archlinux\tmp"].iter().enumerate() {
+            let root = Path::new(root);
+            if !root.is_dir() {
+                eprintln!("skipped unavailable {}", root.display());
+                continue;
+            }
+            let fixture = Fixture::create();
+            let remote =
+                Remote(root.join(format!("monolith-transfer-{}-{index}", std::process::id())));
+            fs::create_dir(&remote.0).unwrap();
+            let run = |paths: &[PathBuf], destination: &Path, move_items| {
+                execute(
+                    null_mut(),
+                    paths,
+                    destination,
+                    move_items,
+                    FOF_SILENT,
+                    Arc::new(AtomicBool::new(false)),
+                )
+                .unwrap()
+            };
+            let copied = fixture.source("café.txt");
+            fs::write(&copied, b"copied").unwrap();
+            assert_eq!(
+                run(std::slice::from_ref(&copied), &remote.0, false),
+                TransferOutcome::Complete
+            );
+            assert_eq!(fs::read(remote.0.join("café.txt")).unwrap(), b"copied");
+            assert!(copied.exists());
+
+            // Across volumes the Shell copies and then deletes the source.
+            let moved = fixture.source("moved.txt");
+            fs::write(&moved, b"moved").unwrap();
+            assert_eq!(
+                run(std::slice::from_ref(&moved), &remote.0, true),
+                TransferOutcome::Complete
+            );
+            assert!(!moved.exists());
+            assert_eq!(fs::read(remote.0.join("moved.txt")).unwrap(), b"moved");
+
+            let back = remote.0.join("café.txt");
+            assert_eq!(
+                run(&[back], &fixture.destination(""), false),
+                TransferOutcome::Complete
+            );
+            assert_eq!(
+                fs::read(fixture.destination("café.txt")).unwrap(),
+                b"copied"
+            );
+            eprintln!("transferred across {}", root.display());
+            exercised += 1;
+        }
+        assert!(
+            exercised > 0,
+            "no secondary volume or WSL distribution was available"
+        );
+    }
 }
