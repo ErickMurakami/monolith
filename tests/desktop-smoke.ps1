@@ -101,6 +101,12 @@ public static class DesktopSmoke {
     // Synthetic keys go to the foreground window. Refuse unless it belongs to this
     // test, Monolith or the Shell, so a failed focus change can never type into
     // the user's other applications.
+    [DllImport("user32.dll")] static extern bool GetLayeredWindowAttributes(IntPtr hwnd, out uint key, out byte alpha, out uint flags);
+    /// Layered opacity, or 255 for a window without layered attributes.
+    public static int Alpha(IntPtr hwnd) {
+        uint key, flags; byte alpha;
+        return GetLayeredWindowAttributes(hwnd, out key, out alpha, out flags) ? alpha : 255;
+    }
     public static bool ForegroundIsSafe() {
         IntPtr foreground = GetForegroundWindow();
         if (foreground == IntPtr.Zero) return true;
@@ -766,9 +772,10 @@ function Invoke-DockSmoke($Application) {
         $fullscreen.Bounds = [Windows.Forms.Screen]::PrimaryScreen.Bounds
         $fullscreen.Show()
         Focus-Fixture $fullscreen
-        Wait-Until { ![DesktopSmoke]::IsWindowVisible($dockWindow) } 'The Dock did not hide for fullscreen.'
+        # Over fullscreen the Dock collapses to an invisible, pointer-revealable strip.
+        Wait-Until { [DesktopSmoke]::Alpha($dockWindow) -eq 1 } 'The Dock did not collapse for fullscreen.'
         $fullscreen.SetBounds(40, 40, 640, 420)
-        Wait-Until { [DesktopSmoke]::IsWindowVisible($dockWindow) } 'The Dock did not return after exiting fullscreen.'
+        Wait-Until { [DesktopSmoke]::IsWindowVisible($dockWindow) -and [DesktopSmoke]::Alpha($dockWindow) -eq 255 } 'The Dock did not return after exiting fullscreen.'
         $fullscreen.Close()
         Wait-Until {
             [DesktopSmoke]::FindWindowEx($dockWindow, [IntPtr]::Zero, 'Button', $target.Text) -ne [IntPtr]::Zero

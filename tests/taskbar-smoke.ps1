@@ -133,9 +133,10 @@ try {
     $fixture.FormBorderStyle = 'None'
     $fixture.Bounds = [Windows.Forms.Screen]::PrimaryScreen.Bounds
     Focus-Fixture $fixture
-    Wait-Until { (Get-Dock) -eq [IntPtr]::Zero -and ![DesktopSmoke]::IsWindowVisible($original) } 'The Dock or native taskbar appeared over fullscreen.'
+    # The Dock waits as an invisible strip over fullscreen; the native taskbar stays hidden.
+    Wait-Until { (Get-Dock) -ne [IntPtr]::Zero -and [DesktopSmoke]::Alpha((Get-Dock)) -eq 1 -and ![DesktopSmoke]::IsWindowVisible($original) } 'The Dock did not collapse, or the native taskbar appeared, over fullscreen.'
     $fixture.SetBounds(120, 125, 480, 300)
-    Wait-Until { (Get-Dock) -ne [IntPtr]::Zero } 'The Dock did not return after fullscreen.'
+    Wait-Until { (Get-Dock) -ne [IntPtr]::Zero -and [DesktopSmoke]::Alpha((Get-Dock)) -eq 255 } 'The Dock did not return after fullscreen.'
     if ($capturePath) {
         Add-Type -AssemblyName System.Drawing
         $bounds = [DesktopSmoke]::Bounds((Get-Dock))

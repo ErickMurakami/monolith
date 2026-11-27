@@ -98,6 +98,10 @@ struct State {
     last_monitor: HMONITOR,
     auto_hide: bool,
     expanded: bool,
+    /// A fullscreen window covers this display; the Dock waits at the bottom edge.
+    covered: bool,
+    /// The pointer revealed the Dock over a fullscreen window.
+    revealed: bool,
     menu_open: bool,
     preview: Option<(HWND, Preview)>,
     icons: Option<icons::Cache>,
@@ -165,7 +169,7 @@ impl Dock {
             }
             let previews_available = preview::register().is_ok();
             let handle = CreateWindowExW(
-                overlay::EX_STYLE | WS_EX_TOPMOST | WS_EX_NOACTIVATE,
+                overlay::EX_STYLE | WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_LAYERED,
                 class_name.as_ptr(),
                 wide("Monolith Dock").as_ptr(),
                 overlay::STYLE | WS_CLIPCHILDREN,
@@ -203,6 +207,8 @@ impl Dock {
                     last_monitor: null_mut(),
                     auto_hide: settings.auto_hide,
                     expanded: !settings.auto_hide,
+                    covered: false,
+                    revealed: false,
                     menu_open: false,
                     preview: None,
                     icons: icons::Cache::new(handle).ok(),
@@ -667,17 +673,24 @@ unsafe fn refresh(hwnd: HWND, state: *mut State) {
             }
             Some(Placement::Pending) | None => None,
         };
-        if desktop::foreground_covers_monitor(monitor, &display.rcMonitor) {
-            ShowWindow(hwnd, SW_HIDE);
-            (*state).groups.clear();
-            (*state).pin_groups.clear();
-            (*state).inventory = None;
-            if (*state).auto_hide {
-                (*state).expanded = false;
-                KillTimer(hwnd, HIDE);
-            }
-            return;
+        // Over a fullscreen window the Dock collapses to an invisible bottom-edge strip
+        // that the pointer can still reveal, instead of disappearing.
+        let covered = desktop::foreground_covers_monitor(monitor, &display.rcMonitor);
+        if covered != (*state).covered {
+            (*state).covered = covered;
+            (*state).revealed = false;
         }
+        let collapsed = if covered {
+            !(*state).revealed
+        } else {
+            !(*state).expanded
+        };
+        SetLayeredWindowAttributes(
+            hwnd,
+            0,
+            if covered && collapsed { 1 } else { 255 },
+            LWA_ALPHA,
+        );
 
         if MonitorFromWindow(hwnd, MONITOR_DEFAULTTONULL) != monitor {
             // Query the destination DPI after relocating the still-hidden window.
@@ -693,7 +706,7 @@ unsafe fn refresh(hwnd: HWND, state: *mut State) {
         }
         let dpi = GetDpiForWindow(hwnd).max(96);
         let scale = |value| overlay::scale(value, dpi);
-        if !(*state).expanded {
+        if collapsed {
             let buttons = &(*state).buttons;
             for &button in buttons {
                 ShowWindow(button, SW_HIDE);
@@ -1025,10 +1038,17 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
                 }
                 0
             }
-            WM_MOUSEMOVE if !(*state).expanded => {
-                (*state).expanded = true;
+            WM_MOUSEMOVE
+                if (*state).covered && !(*state).revealed
+                    || !(*state).covered && !(*state).expanded =>
+            {
+                if (*state).covered {
+                    (*state).revealed = true;
+                } else {
+                    (*state).expanded = true;
+                }
                 refresh(hwnd, state);
-                if IsWindowVisible(hwnd) != 0 && (*state).expanded {
+                if IsWindowVisible(hwnd) != 0 {
                     SetTimer(hwnd, HIDE, 400, None);
                 }
                 0
@@ -1044,7 +1064,12 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
                 if busy || hovered {
                     SetTimer(hwnd, HIDE, 400, None);
                 } else {
-                    (*state).expanded = false;
+                    // Collapse a revealed Dock over fullscreen, or an auto-hidden one.
+                    if (*state).covered {
+                        (*state).revealed = false;
+                    } else if (*state).auto_hide {
+                        (*state).expanded = false;
+                    }
                     refresh(hwnd, state);
                 }
                 0
