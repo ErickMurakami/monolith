@@ -410,7 +410,7 @@ unsafe fn layout(hwnd: HWND, state: *mut State) {
             || if host.is_null() {
                 desktop::foreground_covers_monitor(monitor, &info.rcMonitor)
             } else {
-                IsWindowVisible(host) == 0
+                IsWindowVisible(host) == 0 || crate::top_bar::collapsed()
             }
         {
             if let Some(media) = (*state).media.as_ref() {

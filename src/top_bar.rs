@@ -25,6 +25,7 @@ use windows_sys::Win32::{
 
 const CLOCK: usize = 1;
 const LAYOUT: usize = 2;
+const REVEAL: usize = 3;
 const APPBAR_NOTIFICATION: u32 = WM_APP + 20;
 /// Posted by the notification surface with the unread count in `wParam`.
 pub const UNREAD: u32 = WM_APP + 32;
@@ -36,6 +37,8 @@ const BELL_GLYPH: &str = "\u{EA8F}";
 
 thread_local! {
     static BAR_WINDOW: Cell<HWND> = const { Cell::new(null_mut()) };
+    static COLLAPSED: Cell<bool> = const { Cell::new(false) };
+    static COLLAPSED_SHOWN: Cell<bool> = const { Cell::new(false) };
     static LAYOUT_PENDING: Cell<bool> = const { Cell::new(false) };
     static SHELL_WINDOW: Cell<HWND> = const { Cell::new(null_mut()) };
 }
@@ -64,6 +67,15 @@ struct State {
     shell: HWND,
     region_size: Option<(i32, i32)>,
     recovery_attempts: u8,
+    /// The foreground window draws into the strip; the bar waits at the top edge.
+    covered: bool,
+    /// The pointer revealed the bar over that window.
+    revealed: bool,
+}
+
+/// The bar is collapsed to its edge strip; hosted surfaces such as the Island hide too.
+pub fn collapsed() -> bool {
+    COLLAPSED.get()
 }
 
 impl TopBar {
@@ -91,7 +103,7 @@ impl TopBar {
                 return Err(io::Error::last_os_error());
             }
             let hwnd = CreateWindowExW(
-                overlay::EX_STYLE | WS_EX_TOPMOST | WS_EX_NOACTIVATE,
+                overlay::EX_STYLE | WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_LAYERED,
                 name.as_ptr(),
                 wide("Monolith Top Bar").as_ptr(),
                 overlay::STYLE | WS_CLIPCHILDREN,
@@ -127,6 +139,8 @@ impl TopBar {
                     shell: GetShellWindow(),
                     region_size: None,
                     recovery_attempts: 0,
+                    covered: false,
+                    revealed: false,
                 }),
             };
             if bar.state.brush.is_null() {
@@ -369,10 +383,15 @@ unsafe fn place(hwnd: HWND, state: *mut State) {
             bottom: bounds.top + strip_height,
             ..bounds
         };
-        if desktop::foreground_covers_top_strip(monitor, &info.rcMonitor, &strip) {
-            hide(hwnd);
-            return;
+        // When the foreground window draws into the strip, collapse to an invisible
+        // edge strip that the pointer reveals, rather than vanishing.
+        let covered = desktop::foreground_covers_top_strip(monitor, &info.rcMonitor, &strip);
+        if covered != (*state).covered {
+            (*state).covered = covered;
+            (*state).revealed = false;
         }
+        let collapsed = covered && !(*state).revealed;
+        COLLAPSED.set(collapsed);
         if (*state).dpi != dpi {
             let font = CreateFontW(
                 -scale(13),
@@ -421,15 +440,16 @@ unsafe fn place(hwnd: HWND, state: *mut State) {
         let width = (bounds.right - bounds.left).max(1);
         let height = (bounds.bottom - bounds.top).max(1);
         // Keep the reservation beyond the visible strip for maximised custom frames.
-        if (*state).region_size != Some((width, strip_height)) {
-            let region = CreateRectRgn(0, 0, width, strip_height);
+        let visible_height = if collapsed { scale(3) } else { strip_height };
+        if (*state).region_size != Some((width, visible_height)) {
+            let region = CreateRectRgn(0, 0, width, visible_height);
             if region.is_null() || SetWindowRgn(hwnd, region, 1) == 0 {
                 DeleteObject(region);
                 release_reservation(hwnd, state);
                 hide(hwnd);
                 return;
             }
-            (*state).region_size = Some((width, strip_height));
+            (*state).region_size = Some((width, visible_height));
         }
         let button_width = scale(30);
         let buttons_left = width - inset - 2 * button_width;
@@ -472,10 +492,14 @@ unsafe fn place(hwnd: HWND, state: *mut State) {
             hide(hwnd);
             return;
         }
+        SetLayeredWindowAttributes(hwnd, 0, if collapsed { 1 } else { 255 }, LWA_ALPHA);
         if !was_visible {
             refresh_status(hwnd, state);
         }
         if needs_position {
+            island::host_changed(hwnd);
+        }
+        if collapsed != COLLAPSED_SHOWN.replace(collapsed) {
             island::host_changed(hwnd);
         }
     }
@@ -667,6 +691,27 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                 SetBkColor(wp as HDC, (*state).palette.background);
                 SetTextColor(wp as HDC, (*state).palette.text);
                 (*state).brush as isize
+            }
+            WM_MOUSEMOVE if (*state).covered && !(*state).revealed => {
+                (*state).revealed = true;
+                place(hwnd, state);
+                SetTimer(hwnd, REVEAL, 400, None);
+                0
+            }
+            WM_TIMER if wp == REVEAL => {
+                let mut cursor = POINT::default();
+                let mut bounds = RECT::default();
+                let hovered = GetCursorPos(&mut cursor) != 0
+                    && GetWindowRect(hwnd, &mut bounds) != 0
+                    && cursor.y < bounds.top + overlay::scale(34, (*state).dpi.max(96))
+                    && cursor.x >= bounds.left
+                    && cursor.x < bounds.right;
+                if !hovered {
+                    KillTimer(hwnd, REVEAL);
+                    (*state).revealed = false;
+                    place(hwnd, state);
+                }
+                0
             }
             WM_MOUSEACTIVATE => MA_NOACTIVATE as LRESULT,
             _ => DefWindowProcW(hwnd, msg, wp, lp),
