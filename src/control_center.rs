@@ -2,6 +2,7 @@ use crate::{
     audio::{self, Audio, Volume},
     brightness::{self, Brightness},
     overlay::{self, Palette},
+    radios::{self, Radios},
     windows::{report_for, wide},
 };
 use std::{ffi::c_void, io, mem::size_of, ptr::null_mut};
@@ -53,6 +54,7 @@ struct State {
     volume: Option<Volume>,
     drag_endpoint: Option<u64>,
     brightness: Option<Brightness>,
+    radios: Option<Radios>,
     /// The internal panel level, once the worker reports one.
     brightness_level: Option<u8>,
     palette: Palette,
@@ -128,6 +130,7 @@ impl ControlCenter {
                     volume: None,
                     drag_endpoint: None,
                     brightness: None,
+                    radios: None,
                     brightness_level: None,
                     palette,
                     portuguese,
@@ -224,6 +227,7 @@ impl ControlCenter {
             update_power(hwnd, portuguese);
             (*state).audio = Audio::start(hwnd).ok();
             (*state).brightness = Brightness::start(hwnd).ok();
+            (*state).radios = Radios::start(hwnd).ok();
             if (*state).audio.is_none() {
                 refresh(hwnd, state, None);
             }
@@ -535,6 +539,43 @@ unsafe fn paint_slider(hwnd: HWND, draw: &NMCUSTOMDRAW, palette: Palette) {
     }
 }
 
+/// The radio behind a settings button: Wi-Fi and Bluetooth are the first two.
+fn radio_for(id: usize) -> Option<radios::Kind> {
+    match id.checked_sub(FIRST_SETTING)? {
+        0 => Some(radios::Kind::WiFi),
+        1 => Some(radios::Kind::Bluetooth),
+        _ => None,
+    }
+}
+
+fn radio_caption(name: &str, state: Option<bool>, portuguese: bool) -> String {
+    match (state, portuguese) {
+        (Some(true), false) => format!("{name} · On"),
+        (Some(false), false) => format!("{name} · Off"),
+        (Some(true), true) => format!("{name} · Ligado"),
+        (Some(false), true) => format!("{name} · Desligado"),
+        (None, _) => name.to_owned(),
+    }
+}
+
+unsafe fn update_radios(hwnd: HWND, state: *mut State) {
+    unsafe {
+        let Some(radios) = &(*state).radios else {
+            return;
+        };
+        let states = radios.states();
+        for (index, (english, translated, _)) in SETTINGS.iter().take(2).enumerate() {
+            let id = FIRST_SETTING + index;
+            let name = label((*state).portuguese, english, translated);
+            let kind = radio_for(id).expect("first two settings are radios");
+            let caption = radio_caption(name, states.get(kind), (*state).portuguese);
+            let button = GetDlgItem(hwnd, id as i32);
+            SetWindowTextW(button, wide(&caption).as_ptr());
+            InvalidateRect(button, std::ptr::null(), 1);
+        }
+    }
+}
+
 unsafe fn set_brightness_label(hwnd: HWND, state: *mut State, level: u8) {
     unsafe {
         let name = label((*state).portuguese, "Brightness", "Brilho");
@@ -601,6 +642,10 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                 show_brightness(hwnd, state, wp);
                 0
             }
+            radios::READY => {
+                update_radios(hwnd, state);
+                0
+            }
             WM_CLOSE | WM_ACTIVATE if msg == WM_CLOSE || wp as u16 == WA_INACTIVE as u16 => {
                 PostMessageW(
                     (*state).launcher,
@@ -629,6 +674,16 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                     if let (Some(audio), Some(volume)) = ((*state).audio.as_ref(), (*state).volume)
                     {
                         audio.set_mute(volume.endpoint, !volume.muted);
+                    }
+                } else if let Some(kind) = radio_for(id).filter(|kind| {
+                    (*state)
+                        .radios
+                        .as_ref()
+                        .is_some_and(|radios| radios.states().get(*kind).is_some())
+                }) {
+                    // A direct control; the Settings page remains the fallback below.
+                    if let Some(radios) = &(*state).radios {
+                        radios.toggle(kind);
                     }
                 } else if let Some((_, _, uri)) = id
                     .checked_sub(FIRST_SETTING)

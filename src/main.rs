@@ -52,6 +52,8 @@ mod preview;
 mod quick_content;
 #[cfg(windows)]
 mod quick_look;
+#[cfg(windows)]
+mod radios;
 #[cfg(any(windows, test))]
 mod search;
 #[cfg(windows)]

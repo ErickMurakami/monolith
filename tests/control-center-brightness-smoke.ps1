@@ -28,6 +28,14 @@ try {
     $label = [DesktopSmoke]::GetDlgItem($panel, 5)
     $slider = [DesktopSmoke]::GetDlgItem($panel, 6)
     Wait-Until { [DesktopSmoke]::IsWindowVisible($slider) -and (Read-Text $label) -match "\s$original%$" } "The brightness row did not report $original%."
+    # Read-only: the radio buttons show Windows' state. Toggling is not exercised
+    # because switching Wi-Fi off would disconnect the session running this test.
+    foreach ($id in 10, 11) {
+        $button = [DesktopSmoke]::GetDlgItem($panel, $id)
+        # The helper reads ANSI text, so match any separator character.
+        Wait-Until { (Read-Text $button) -match ' . (On|Off)$' } "Radio control $id did not show its state."
+        "radio control: $(Read-Text $button)"
+    }
     Set-Slider $panel $slider $target
     Wait-Until { (Get-Brightness) -eq $target } "Brightness did not change to $target%." 8
     Wait-Until { (Read-Text $label) -match "\s$target%$" } 'The brightness label did not follow the change.'
