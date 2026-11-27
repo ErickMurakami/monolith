@@ -115,6 +115,18 @@ The bridge now also serves the opt-in `workspace_shortcuts` setting: Win+1-9 sel
 
 ## Next task
 
+### Founder feedback, round 3 (27 November 2026)
+
+Confirmed: Win+1-9 now works on the physical keyboard (the hook-thread fix resolved it), and the Top Bar reveal behaviour is "perfect".
+
+To do, in order:
+1. **Top Bar reveal animation:** parts appear at different times. Fade the whole bar in together: repaint children at opacity 1, then animate opacity to 255 over about 120 ms on a timer that exists only while fading. Show the Island only after the bar is fully revealed, and fade out symmetrically.
+2. **Auto-close empty workspaces** (new config, for example `close_empty_workspaces = true`): keep at most one empty desktop. A desktop is empty when no eligible top-level window belongs to it; enumerate cloaked windows too and use the public `GetWindowDesktopId`. Removing a non-current desktop needs `IVirtualDesktopManagerInternal::RemoveDesktop(desktop, fallback)`, slot 13 in the VirtualDesktopAccessor layout (count 3, move view 4, can move 5, current 6, desktops 7, adjacent 8, switch 9, switch and move 10, create 11, move desktop 12, remove 13). It is covered by the founder's adapter approval, with the same build and self-check gates. Never close the current desktop or one holding windows.
+3. **Mimic macOS for switching and showing workspaces:** an animated directional transition, and a Mission Control-style view with the desktops as a strip across the top (live thumbnails) above the current desktop's windows. Windows already animates native desktop switches. Monolith's part is the Mission Control layout (`src/mission.rs`) per `docs/design/workspaces.png` and DESIGN.md section 10.
+4. **Dock:** keep restyling strictly from `docs/design/dock.png`: a Mission Control grid glyph at the left, a separator between apps and system actions, consistent icon size, a soft glow under the active tile, and no Exit tile in the Dock (Exit stays in the context menu).
+5. **Three-finger sideways swipes "not working well"** after the setting change: ask what exactly fails (no switch, wrong direction, lag, only from fullscreen).
+6. Control Center and Island visual refinement against their references.
+
 ### Founder feedback, 27 November 2026 (daily-driver trial)
 
 The founder is running the installed copy: `%LOCALAPPDATA%\Monolith\bin\monolith.exe`, launched by the Start menu shortcut "Monolith" with `--replace-taskbar`, and settings in `%LOCALAPPDATA%\Monolith\config.toml`, with every opt-in enabled. After changing the code, rebuild and copy the executable there; exit the running copy first (Dock > Exit).
