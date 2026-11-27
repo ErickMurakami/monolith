@@ -34,6 +34,8 @@ const MAX_PILLS: usize = 9;
 const MAX_CARDS: usize = 5;
 const PER_CARD: usize = 4;
 const MAX_TILES: usize = MAX_CARDS * PER_CARD;
+const FIRST_CLOSE: usize = FIRST_TILE + MAX_TILES;
+const RELOAD_TIMER: usize = 1;
 
 // Segoe Fluent Icons code points.
 const GLYPH_ADD: &str = "\u{E710}";
@@ -41,6 +43,7 @@ const GLYPH_TASK_VIEW: &str = "\u{E7C4}";
 const GLYPH_PREVIOUS: &str = "\u{E76B}";
 const GLYPH_NEXT: &str = "\u{E76C}";
 const GLYPH_FULLSCREEN: &str = "\u{E740}";
+const GLYPH_CLOSE: &str = "\u{E711}";
 
 pub struct Mission {
     hwnd: HWND,
@@ -110,6 +113,7 @@ struct State {
     font: HFONT,
     label: HFONT,
     icons: HFONT,
+    small_icons: HFONT,
     dpi: u32,
     status: Option<&'static str>,
 }
@@ -193,6 +197,7 @@ impl Mission {
                     font: null_mut(),
                     label: null_mut(),
                     icons: null_mut(),
+                    small_icons: null_mut(),
                     dpi: 0,
                     status: None,
                 }),
@@ -230,6 +235,10 @@ impl Mission {
             )?;
             for index in 0..MAX_CARDS {
                 button("", FIRST_CARD + index)?;
+                button(
+                    overview.state.label("Close desktop", "Fechar área"),
+                    FIRST_CLOSE + index,
+                )?;
             }
             for index in 0..MAX_TILES {
                 overview.state.tiles.push(Tile {
@@ -305,6 +314,7 @@ impl Drop for Mission {
             DeleteObject(self.state.font);
             DeleteObject(self.state.label);
             DeleteObject(self.state.icons);
+            DeleteObject(self.state.small_icons);
         }
     }
 }
@@ -592,12 +602,13 @@ unsafe fn fonts(state: &mut State, dpi: u32) {
                 wide(face).as_ptr(),
             )
         };
-        for old in [state.font, state.label, state.icons] {
+        for old in [state.font, state.label, state.icons, state.small_icons] {
             DeleteObject(old);
         }
         state.font = create(13, FW_NORMAL as i32, "Segoe UI");
         state.label = create(15, FW_SEMIBOLD as i32, "Segoe UI");
         state.icons = create(16, FW_NORMAL as i32, "Segoe Fluent Icons");
+        state.small_icons = create(12, FW_NORMAL as i32, "Segoe Fluent Icons");
         state.dpi = dpi;
     }
 }
@@ -644,11 +655,20 @@ unsafe fn render(hwnd: HWND, state: *mut State) {
         place(NEXT, layout.next, paging);
         for index in 0..MAX_CARDS {
             let card = layout.cards.get(index).copied().unwrap_or_default();
+            let shown = index < layout.cards.len();
             let header = RECT {
                 bottom: card.top + overlay::scale(HEADER, dpi),
                 ..card
             };
-            let child = place(FIRST_CARD + index, header, index < layout.cards.len());
+            // The last remaining desktop cannot be closed.
+            let closable = shown && state.desks.len() > 1;
+            let close = close_button(header, dpi);
+            place(FIRST_CLOSE + index, close, closable);
+            let header = RECT {
+                right: if closable { close.left } else { header.right },
+                ..header
+            };
+            let child = place(FIRST_CARD + index, header, shown);
             if let Some(desk) = state.desks.get(layout.first + index) {
                 SetWindowTextW(child, wide(&desk.name).as_ptr());
             }
@@ -1072,8 +1092,8 @@ unsafe fn draw_item(state: &State, item: &DRAWITEMSTRUCT) {
                     DT_LEFT,
                 );
                 let trailing = RECT {
-                    left: rect.right - scale(56),
-                    right: rect.right - scale(20),
+                    left: rect.right - scale(48),
+                    right: rect.right - scale(if state.desks.len() > 1 { 4 } else { 20 }),
                     ..rect
                 };
                 let label = RECT {
@@ -1102,6 +1122,42 @@ unsafe fn draw_item(state: &State, item: &DRAWITEMSTRUCT) {
                     let more = format!("+{}", desk.windows.len() - PER_CARD);
                     text(dc, &more, trailing, state.font, colours.secondary, DT_RIGHT);
                 }
+            }
+            FIRST_CLOSE.. => {
+                let card = id - FIRST_CLOSE;
+                let Some(&whole) = layout.cards.get(card) else {
+                    return;
+                };
+                let own = close_button(
+                    RECT {
+                        bottom: whole.top + scale(HEADER),
+                        ..whole
+                    },
+                    dpi,
+                );
+                let mut shape = whole;
+                OffsetRect(&mut shape, -own.left, -own.top);
+                let border = if layout.first + card == current {
+                    (colours.accent, scale(2))
+                } else {
+                    (colours.border, 1)
+                };
+                fill(dc, &rect, colours.panel);
+                rounded(dc, &shape, scale(16), colours.card, Some(border));
+                let mut circle = rect;
+                InflateRect(&mut circle, -scale(8), -scale(8));
+                if pressed || focused {
+                    let ring = focused.then_some((colours.accent, scale(2)));
+                    rounded(dc, &circle, scale(16), colours.pressed, ring);
+                }
+                text(
+                    dc,
+                    GLYPH_CLOSE,
+                    rect,
+                    state.small_icons,
+                    colours.secondary,
+                    DT_CENTER,
+                );
             }
             _ => {
                 let tile = &state.tiles[id - FIRST_TILE];
@@ -1176,6 +1232,53 @@ fn desk_label(name: &str, index: usize) -> &str {
     }
 }
 
+/// The close control at the right end of a card's header.
+fn close_button(header: RECT, dpi: u32) -> RECT {
+    let side = overlay::scale(44, dpi);
+    let right = header.right - overlay::scale(6, dpi);
+    let top = header.top + (header.bottom - header.top - side) / 2;
+    RECT {
+        left: right - side,
+        top,
+        right,
+        bottom: top + side,
+    }
+}
+
+/// Close desktop `index`. Its windows move to a neighbouring desktop, as when a
+/// desktop is closed in Task View, so no window is lost.
+unsafe fn close_desk(hwnd: HWND, state: *mut State, index: usize) {
+    unsafe {
+        let current = (*state).current;
+        if (*state).desks.len() < 2 || index >= (*state).desks.len() {
+            return;
+        }
+        if index == current {
+            // Windows closes the current desktop and moves to the one on its left.
+            press(
+                hwnd,
+                state,
+                &[VK_LWIN, VK_LCONTROL, VK_F4],
+                (*state).label(
+                    "Close this desktop with Win+Ctrl+F4",
+                    "Feche esta área com Win+Ctrl+F4",
+                ),
+            );
+        } else if crate::space_bridge::remove_desktop(index, current) {
+            SetTimer(hwnd, RELOAD_TIMER, 300, None);
+        } else {
+            refuse(
+                hwnd,
+                state,
+                (*state).label(
+                    "Closing another desktop needs desktop_moves, fullscreen_workspaces or close_empty_workspaces",
+                    "Fechar outra área requer desktop_moves, fullscreen_workspaces ou close_empty_workspaces",
+                ),
+            );
+        }
+    }
+}
+
 unsafe fn activate(hwnd: HWND, state: *mut State, target: WindowTarget) {
     unsafe {
         match target.activate() {
@@ -1210,6 +1313,11 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
             }
             WM_DPICHANGED | WM_DISPLAYCHANGE => {
                 render(hwnd, state);
+                0
+            }
+            WM_TIMER if wp == RELOAD_TIMER => {
+                KillTimer(hwnd, RELOAD_TIMER);
+                reload(hwnd, state);
                 0
             }
             WM_LBUTTONUP => {
@@ -1252,6 +1360,9 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                     FIRST_PILL..FIRST_CARD => select_desk(hwnd, state, id - FIRST_PILL),
                     FIRST_CARD..FIRST_TILE => {
                         select_desk(hwnd, state, (*state).layout.first + id - FIRST_CARD)
+                    }
+                    FIRST_CLOSE.. => {
+                        close_desk(hwnd, state, (*state).layout.first + id - FIRST_CLOSE)
                     }
                     FIRST_TILE.. => {
                         let target = (&(*state))

@@ -38,6 +38,7 @@ const LOGO_UP: u32 = WM_APP + 2;
 const BEGIN: u32 = WM_APP + 3;
 const WINDOW_CHANGED: u32 = WM_APP + 4;
 const MOVE_WINDOW: u32 = WM_APP + 5;
+const REMOVE_DESKTOP: u32 = WM_APP + 6;
 /// Thread ID of the desktop worker, or zero while it is not running.
 static DESKTOP_THREAD: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 const POLL_MS: u32 = 10;
@@ -298,6 +299,15 @@ unsafe fn run(ready: mpsc::Sender<io::Result<u32>>) {
     }
 }
 
+/// Ask the desktop worker to remove the desktop at `index`, moving its windows to
+/// `fallback`. False when the adapter is not running; the worker never removes the
+/// current desktop.
+pub fn remove_desktop(index: usize, fallback: usize) -> bool {
+    let thread = DESKTOP_THREAD.load(Ordering::Acquire);
+    thread != 0
+        && unsafe { PostThreadMessageW(thread, REMOVE_DESKTOP, index, fallback as isize) } != 0
+}
+
 /// Start the thread that owns the virtual desktop adapter. None when the adapter's
 /// gates fail, in which case moves and fullscreen workspaces stay off.
 fn start_desktop_worker(fullscreen: bool, close_empty: bool) -> Option<JoinHandle<()>> {
@@ -380,6 +390,9 @@ unsafe fn run_desktop_worker(fullscreen: bool, close_empty: bool, ready: mpsc::S
                     if close_empty {
                         crate::workspaces::close_empty_desktops(&mover);
                     }
+                }
+                REMOVE_DESKTOP => {
+                    mover.remove_desktop(msg.wParam, msg.lParam as usize);
                 }
                 MOVE_WINDOW => {
                     mover.move_window(
