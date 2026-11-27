@@ -90,6 +90,8 @@ pub struct Chords {
     pub moves: bool,
     /// Fullscreen applications get their own desktop, through the same adapter.
     pub fullscreen: bool,
+    /// Close surplus empty desktops, keeping one, through the same adapter.
+    pub close_empty: bool,
 }
 
 #[derive(Default)]
@@ -235,10 +237,12 @@ unsafe fn run(ready: mpsc::Sender<io::Result<u32>>) {
         THREAD.set(GetCurrentThreadId());
         // Desktop moves and fullscreen workspaces run on their own thread, so slow
         // desktop work can never make Windows time out and remove this keyboard hook.
-        let (moves, fullscreen) =
-            MACHINE.with_borrow(|machine| (machine.chords.moves, machine.chords.fullscreen));
-        let desktop_worker = (moves || fullscreen)
-            .then(|| start_desktop_worker(fullscreen))
+        let (moves, fullscreen, close_empty) = MACHINE.with_borrow(|machine| {
+            let chords = machine.chords;
+            (chords.moves, chords.fullscreen, chords.close_empty)
+        });
+        let desktop_worker = (moves || fullscreen || close_empty)
+            .then(|| start_desktop_worker(fullscreen, close_empty))
             .flatten();
         let _ = ready.send(Ok(GetCurrentThreadId()));
         let mut logo_timer = 0;
@@ -296,11 +300,11 @@ unsafe fn run(ready: mpsc::Sender<io::Result<u32>>) {
 
 /// Start the thread that owns the virtual desktop adapter. None when the adapter's
 /// gates fail, in which case moves and fullscreen workspaces stay off.
-fn start_desktop_worker(fullscreen: bool) -> Option<JoinHandle<()>> {
+fn start_desktop_worker(fullscreen: bool, close_empty: bool) -> Option<JoinHandle<()>> {
     let (ready, started) = mpsc::channel();
     let worker = thread::Builder::new()
         .name("monolith-desktops".into())
-        .spawn(move || unsafe { run_desktop_worker(fullscreen, ready) })
+        .spawn(move || unsafe { run_desktop_worker(fullscreen, close_empty, ready) })
         .ok()?;
     match started.recv() {
         Ok(true) => Some(worker),
@@ -311,7 +315,7 @@ fn start_desktop_worker(fullscreen: bool) -> Option<JoinHandle<()>> {
     }
 }
 
-unsafe fn run_desktop_worker(fullscreen: bool, ready: mpsc::Sender<bool>) {
+unsafe fn run_desktop_worker(fullscreen: bool, close_empty: bool, ready: mpsc::Sender<bool>) {
     use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx, CoUninitialize};
     unsafe {
         let mut msg = MSG::default();
@@ -327,8 +331,18 @@ unsafe fn run_desktop_worker(fullscreen: bool, ready: mpsc::Sender<bool>) {
         DESKTOP_THREAD.store(GetCurrentThreadId(), Ordering::Release);
         // Fullscreen detection follows foreground and window geometry changes.
         let mut hooks = Vec::new();
+        let mut events = Vec::new();
+        if fullscreen || close_empty {
+            events.push(EVENT_SYSTEM_FOREGROUND);
+        }
         if fullscreen {
-            for event in [EVENT_SYSTEM_FOREGROUND, EVENT_OBJECT_LOCATIONCHANGE] {
+            events.push(EVENT_OBJECT_LOCATIONCHANGE);
+        }
+        if close_empty {
+            events.push(EVENT_OBJECT_DESTROY);
+        }
+        {
+            for event in events {
                 let hook = SetWinEventHook(
                     event,
                     event,
@@ -345,6 +359,9 @@ unsafe fn run_desktop_worker(fullscreen: bool, ready: mpsc::Sender<bool>) {
         }
         let _ = ready.send(true);
         let mut spaces = crate::workspaces::FullscreenSpaces::default();
+        if close_empty {
+            crate::workspaces::close_empty_desktops(&mover);
+        }
         let mut timer = 0;
         while GetMessageW(&mut msg, null_mut(), 0, 0) > 0 {
             match msg.message {
@@ -354,7 +371,12 @@ unsafe fn run_desktop_worker(fullscreen: bool, ready: mpsc::Sender<bool>) {
                 WM_TIMER if msg.wParam == timer && timer != 0 => {
                     KillTimer(null_mut(), timer);
                     timer = 0;
-                    spaces.check(&mover);
+                    if fullscreen {
+                        spaces.check(&mover);
+                    }
+                    if close_empty {
+                        crate::workspaces::close_empty_desktops(&mover);
+                    }
                 }
                 MOVE_WINDOW => {
                     mover.move_window(
@@ -566,6 +588,7 @@ mod tests {
         workspaces: true,
         moves: true,
         fullscreen: false,
+        close_empty: false,
     };
     const NONE: Modifiers = Modifiers {
         logo: false,

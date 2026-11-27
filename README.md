@@ -58,6 +58,7 @@ shortcut = "ctrl-alt-space" # win-space, ctrl-alt-space, disabled
 # workspace_shortcuts = true # experimental Win+1-9 desktop selection and Win+Tab Mission Control
 # desktop_moves = true       # experimental Win+Shift+1-9 moves the focused window to a desktop
 # fullscreen_workspaces = true # experimental: fullscreen apps get a desktop of their own
+# close_empty_workspaces = true # experimental: close empty desktops, keeping one
 # notifications = true      # experimental incoming notifications below the Island
 # hide_notification_content = true # show only the source app, never the text
 dock = false               # set true to opt in

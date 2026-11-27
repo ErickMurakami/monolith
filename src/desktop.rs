@@ -398,6 +398,58 @@ pub fn foreground_covers_monitor(monitor: HMONITOR, bounds: &RECT) -> bool {
     foreground_on_monitor(monitor).is_some_and(|hwnd| covers_display(hwnd, bounds))
 }
 
+/// Desktops, in the registry's binary GUID layout, that hold at least one ordinary
+/// window of another process, including windows cloaked on other desktops. Call on a
+/// thread with COM initialised.
+pub fn occupied_desktops() -> Vec<[u8; 16]> {
+    use windows::Win32::{
+        Foundation::HWND as Window,
+        System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance},
+        UI::Shell::{IVirtualDesktopManager, VirtualDesktopManager},
+    };
+    let Ok(manager) = (unsafe {
+        CoCreateInstance::<_, IVirtualDesktopManager>(
+            &VirtualDesktopManager,
+            None,
+            CLSCTX_INPROC_SERVER,
+        )
+    }) else {
+        return Vec::new();
+    };
+    let mut handles: Vec<HWND> = Vec::new();
+    if unsafe { EnumWindows(Some(collect_window), (&raw mut handles) as LPARAM) } == 0 {
+        return Vec::new();
+    }
+    let own = std::process::id();
+    let mut occupied = Vec::new();
+    for hwnd in handles {
+        let ordinary = unsafe {
+            IsWindowVisible(hwnd) != 0
+                && GetWindow(hwnd, GW_OWNER).is_null()
+                && (GetWindowLongW(hwnd, GWL_EXSTYLE) as u32 & WS_EX_TOOLWINDOW) == 0
+                && windows_sys::Win32::UI::WindowsAndMessaging::GetWindowTextLengthW(hwnd) > 0
+        };
+        if !ordinary || identity(hwnd).is_none_or(|(process, _)| process == own) {
+            continue;
+        }
+        let Ok(id) = (unsafe { manager.GetWindowDesktopId(Window(hwnd)) }) else {
+            continue;
+        };
+        if id == windows::core::GUID::zeroed() {
+            continue;
+        }
+        let mut bytes = [0_u8; 16];
+        bytes[..4].copy_from_slice(&id.data1.to_le_bytes());
+        bytes[4..6].copy_from_slice(&id.data2.to_le_bytes());
+        bytes[6..8].copy_from_slice(&id.data3.to_le_bytes());
+        bytes[8..].copy_from_slice(&id.data4);
+        if !occupied.contains(&bytes) {
+            occupied.push(bytes);
+        }
+    }
+    occupied
+}
+
 /// Whether DWM hides `hwnd`, as it does for windows on another virtual desktop.
 pub fn is_cloaked(hwnd: HWND) -> bool {
     let mut cloaked = 0_u32;

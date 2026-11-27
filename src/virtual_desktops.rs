@@ -36,6 +36,7 @@ const MANAGER_GET_COUNT: usize = 3;
 const MANAGER_MOVE_VIEW: usize = 4;
 const MANAGER_GET_CURRENT: usize = 6;
 const MANAGER_GET_DESKTOPS: usize = 7;
+const MANAGER_REMOVE_DESKTOP: usize = 13;
 const VIEWS_FOR_HWND: usize = 6;
 const DESKTOP_GET_ID: usize = 4;
 
@@ -46,6 +47,7 @@ type GetObject = unsafe extern "system" fn(*mut c_void, *mut *mut c_void) -> HRE
 type MoveView = unsafe extern "system" fn(*mut c_void, *mut c_void, *mut c_void) -> HRESULT;
 type ViewForHwnd = unsafe extern "system" fn(*mut c_void, HWND, *mut *mut c_void) -> HRESULT;
 type GetId = unsafe extern "system" fn(*mut c_void, *mut GUID) -> HRESULT;
+type RemoveDesktop = unsafe extern "system" fn(*mut c_void, *mut c_void, *mut c_void) -> HRESULT;
 
 /// Read a vtable slot. The caller guarantees the object implements the interface
 /// whose layout defines `index`, which the gates above establish.
@@ -177,6 +179,26 @@ impl Mover {
             };
             let call: MoveView = slot(self.manager.as_raw(), MANAGER_MOVE_VIEW);
             call(self.manager.as_raw(), view.as_raw(), desktop.as_raw()).is_ok()
+        }
+    }
+}
+
+impl Mover {
+    /// Remove the desktop at `index`, moving anything left on it to `fallback`.
+    /// Never removes the current desktop. Rechecks Explorer's state first.
+    pub fn remove_desktop(&self, index: usize, fallback: usize) -> bool {
+        let Ok(state) = workspaces::read() else {
+            return false;
+        };
+        if index == fallback || state.current == Some(index) || !self.agrees_with_explorer() {
+            return false;
+        }
+        let (Some(desktop), Some(fallback)) = (self.desktop(index), self.desktop(fallback)) else {
+            return false;
+        };
+        unsafe {
+            let call: RemoveDesktop = slot(self.manager.as_raw(), MANAGER_REMOVE_DESKTOP);
+            call(self.manager.as_raw(), desktop.as_raw(), fallback.as_raw()).is_ok()
         }
     }
 }

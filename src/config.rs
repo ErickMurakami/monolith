@@ -27,6 +27,8 @@ pub struct Config {
     /// Experimental: fullscreen applications get their own desktop through the same
     /// adapter and return when they leave fullscreen.
     pub fullscreen_workspaces: bool,
+    /// Experimental: close empty desktops automatically, keeping one empty desktop.
+    pub close_empty_workspaces: bool,
     pub dock: bool,
     pub dock_pins: Vec<String>,
     pub dock_monitor: DockMonitor,

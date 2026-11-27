@@ -331,6 +331,7 @@ pub fn run() -> io::Result<()> {
             settings.workspace_shortcuts,
             settings.desktop_moves,
             settings.fullscreen_workspaces,
+            settings.close_empty_workspaces,
         );
         (*state_ptr).chord = hotkey.chord();
         let order_path = config_path.with_file_name("dock-order.toml");

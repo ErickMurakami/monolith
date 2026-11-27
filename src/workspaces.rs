@@ -505,6 +505,44 @@ fn close_current_if_empty(created: DesktopId) {
     }
 }
 
+/// Positions of empty desktops to remove so that at most one empty desktop remains.
+/// The current desktop is never removed, and is the empty one kept when it is empty.
+fn surplus_empty(ids: &[DesktopId], current: Option<usize>, occupied: &[DesktopId]) -> Vec<usize> {
+    let empty: Vec<usize> = ids
+        .iter()
+        .enumerate()
+        .filter(|(_, id)| !occupied.contains(id))
+        .map(|(index, _)| index)
+        .collect();
+    let keep = current
+        .filter(|index| empty.contains(index))
+        .or_else(|| empty.last().copied());
+    empty
+        .into_iter()
+        .filter(|index| Some(*index) != keep && Some(*index) != current)
+        .collect()
+}
+
+/// Opt-in: close surplus empty desktops through the adapter, one at a time,
+/// re-reading Explorer's state after each removal. Call on the desktop worker.
+pub fn close_empty_desktops(mover: &crate::virtual_desktops::Mover) {
+    for _ in 0..8 {
+        let Ok(state) = read() else { return };
+        let Some(current) = state.current else { return };
+        let occupied = crate::desktop::occupied_desktops();
+        let Some(&index) = surplus_empty(&state.ids, Some(current), &occupied).first() else {
+            return;
+        };
+        let removed = state.ids[index];
+        if !mover.remove_desktop(index, current) {
+            return;
+        }
+        wait_until(1_000, || {
+            read().is_ok_and(|now| !now.ids.contains(&removed))
+        });
+    }
+}
+
 fn any_modifier_held() -> bool {
     [VK_LWIN, VK_RWIN, VK_SHIFT, VK_CONTROL, VK_MENU]
         .into_iter()
@@ -640,6 +678,19 @@ mod tests {
     }
 
     #[test]
+    fn keeps_one_empty_desktop_and_never_the_current_one() {
+        let ids = [[1; 16], [2; 16], [3; 16], [4; 16], [5; 16]];
+        // Desktops 1 and 3 hold windows; the current one (index 0) is occupied.
+        let occupied = [[1; 16], [3; 16]];
+        assert_eq!(surplus_empty(&ids, Some(0), &occupied), vec![1, 3]);
+        // When the current desktop is empty, it is the one kept.
+        assert_eq!(surplus_empty(&ids, Some(1), &occupied), vec![3, 4]);
+        // Nothing to do with a single empty desktop.
+        assert!(surplus_empty(&ids[..3], Some(0), &occupied).is_empty());
+        assert!(surplus_empty(&ids[..1], Some(0), &[]).is_empty());
+    }
+
+    #[test]
     fn plans_fullscreen_spaces_without_nesting() {
         let space = Space {
             window: 7,
@@ -720,5 +771,64 @@ mod tests {
         let workspaces = read().unwrap();
         assert!(!workspaces.ids.is_empty());
         assert!(workspaces.current.is_some());
+    }
+
+    #[test]
+    #[ignore = "dry run against the interactive user's desktops; removes nothing"]
+    fn reports_which_empty_desktops_would_close() {
+        use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx};
+        unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok().unwrap() };
+        let state = read().unwrap();
+        let occupied = crate::desktop::occupied_desktops();
+        let surplus = surplus_empty(&state.ids, state.current, &occupied);
+        for (index, id) in state.ids.iter().enumerate() {
+            println!(
+                "desktop {}: {}{}{}",
+                index + 1,
+                if occupied.contains(id) {
+                    "has windows"
+                } else {
+                    "empty"
+                },
+                if state.current == Some(index) {
+                    ", current"
+                } else {
+                    ""
+                },
+                if surplus.contains(&index) {
+                    ", would close"
+                } else {
+                    ""
+                }
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "closes surplus empty desktops on the interactive user's session"]
+    fn closes_surplus_empty_desktops_live() {
+        use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx};
+        unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok().unwrap() };
+        let mover = crate::virtual_desktops::Mover::connect().expect("adapter gates failed");
+        let before = read().unwrap();
+        let surplus = surplus_empty(
+            &before.ids,
+            before.current,
+            &crate::desktop::occupied_desktops(),
+        );
+        println!(
+            "before: {} desktops, surplus {:?}",
+            before.ids.len(),
+            surplus
+        );
+        if let Some(&index) = surplus.first() {
+            println!(
+                "remove {} -> {}",
+                index,
+                mover.remove_desktop(index, before.current.unwrap())
+            );
+        }
+        close_empty_desktops(&mover);
+        println!("after: {} desktops", read().unwrap().ids.len());
     }
 }
