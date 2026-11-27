@@ -63,6 +63,8 @@ mod taskbar;
 #[cfg(windows)]
 mod top_bar;
 #[cfg(windows)]
+mod virtual_desktops;
+#[cfg(windows)]
 mod windows;
 #[cfg(windows)]
 mod workspaces;

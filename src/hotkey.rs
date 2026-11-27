@@ -40,6 +40,7 @@ impl Hotkey {
         shortcut: Shortcut,
         win_space_bridge: bool,
         workspace_shortcuts: bool,
+        desktop_moves: bool,
     ) -> Self {
         let mut binding = Self {
             window,
@@ -51,6 +52,7 @@ impl Hotkey {
         };
         let mut chords = Chords {
             workspaces: workspace_shortcuts,
+            moves: desktop_moves,
             ..Chords::default()
         };
         let preferred = match shortcut {
@@ -91,7 +93,7 @@ impl Hotkey {
                 register(window, MISSION_ID, MOD_CONTROL | MOD_ALT, VK_F24).is_ok();
             chords.mission_control = binding.mission_registered;
         }
-        if chords.spotlight || chords.workspaces {
+        if chords.spotlight || chords.workspaces || chords.moves {
             binding.bridge = SpaceBridge::start(chords).ok();
             if binding.bridge.is_some() && chords.spotlight {
                 binding.chord = Some("Win + Space");

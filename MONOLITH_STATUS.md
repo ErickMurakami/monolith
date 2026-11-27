@@ -117,7 +117,7 @@ The bridge now also serves the opt-in `workspace_shortcuts` setting: Win+1-9 sel
 
 Supervised checks still open: Wi-Fi toggling (Bluetooth, dead keys and the simulated swipe-up are verified), and a physical touchpad swipe and physical keyboard as the final confirmation.
 
-In progress: an opt-in compatibility adapter for the private virtual desktop interfaces, approved by the founder on 27 November 2026. It must be off by default, detect the Windows build, and disable itself on a mismatch. It will move other applications' windows between desktops (Win+Shift+1-9) and give fullscreen applications their own desktop. No injection or Explorer patching.
+The opt-in private virtual desktop adapter (approved on 27 November 2026) now drives Win+Shift+1-9 with `desktop_moves = true`. `tests/desktop-move-smoke.ps1` moved another process's window to a temporary desktop without switching the view and cleaned up, in two runs. Still to build on it: giving fullscreen applications their own desktop automatically.
 
 Then continue with:
 - Notification actions. The listener API exposes no way to invoke toast buttons; clicking the banner already restores the source app window.

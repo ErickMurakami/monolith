@@ -51,6 +51,7 @@ pub struct Key {
 pub struct Modifiers {
     pub logo: bool,
     pub other: bool,
+    pub shift: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -59,6 +60,8 @@ pub enum Action {
     MissionControl,
     /// Zero-based workspace index from Win+1 through Win+9.
     Workspace(u8),
+    /// Zero-based target for moving the focused window, from Win+Shift+1 through 9.
+    MoveTo(u8),
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -75,6 +78,8 @@ pub struct Chords {
     pub spotlight: bool,
     pub mission_control: bool,
     pub workspaces: bool,
+    /// Win+Shift+1-9 through the opt-in virtual desktop adapter.
+    pub moves: bool,
 }
 
 #[derive(Default)]
@@ -115,11 +120,14 @@ impl Machine {
         if key.up || !modifiers.logo || modifiers.other {
             return Decision::Pass;
         }
-        let action = match key.vk {
-            VK_SPACE if self.chords.spotlight => Action::Spotlight,
-            VK_TAB if self.chords.mission_control => Action::MissionControl,
-            digit @ 0x31..=0x39 if self.chords.workspaces => {
+        let action = match (key.vk, modifiers.shift) {
+            (VK_SPACE, false) if self.chords.spotlight => Action::Spotlight,
+            (VK_TAB, false) if self.chords.mission_control => Action::MissionControl,
+            (digit @ 0x31..=0x39, false) if self.chords.workspaces => {
                 Action::Workspace((digit - 0x31) as u8)
+            }
+            (digit @ 0x31..=0x39, true) if self.chords.moves => {
+                Action::MoveTo((digit - 0x31) as u8)
             }
             _ => return Decision::Pass,
         };
@@ -154,6 +162,7 @@ impl Machine {
 
 thread_local! {
     static MACHINE: RefCell<Machine> = RefCell::default();
+    static MOVER: RefCell<Option<crate::virtual_desktops::Mover>> = const { RefCell::new(None) };
     static THREAD: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
 }
 
@@ -215,6 +224,17 @@ unsafe fn run(ready: mpsc::Sender<io::Result<u32>>) {
             return;
         }
         THREAD.set(GetCurrentThreadId());
+        // The private desktop adapter needs COM; it disables itself if its gates fail.
+        let moves = MACHINE.with_borrow(|machine| machine.chords.moves);
+        let apartment = moves
+            && windows::Win32::System::Com::CoInitializeEx(
+                None,
+                windows::Win32::System::Com::COINIT_APARTMENTTHREADED,
+            )
+            .is_ok();
+        if moves {
+            MOVER.set(crate::virtual_desktops::Mover::connect());
+        }
         let _ = ready.send(Ok(GetCurrentThreadId()));
         let mut logo_timer = 0;
         let mut logo_waited = 0;
@@ -257,6 +277,10 @@ unsafe fn run(ready: mpsc::Sender<io::Result<u32>>) {
             }
         }
         UnhookWindowsHookEx(hook);
+        MOVER.set(None);
+        if apartment {
+            windows::Win32::System::Com::CoUninitialize();
+        }
         if logo_timer != 0 {
             KillTimer(null_mut(), logo_timer);
         }
@@ -292,6 +316,18 @@ unsafe fn try_run_action(timer: &mut usize, waited: &mut u32) {
             Action::MissionControl => workspaces::press(&[VK_LCONTROL, VK_LMENU, VK_F24], 1),
             Action::Workspace(index) => {
                 workspaces::switch_to(usize::from(index));
+                true
+            }
+            Action::MoveTo(index) => {
+                // The window that had focus when the chord was pressed keeps it now.
+                MOVER.with_borrow(|mover| {
+                    if let Some(mover) = mover {
+                        mover.move_window(
+                            windows::Win32::Foundation::HWND(GetForegroundWindow()),
+                            usize::from(index),
+                        );
+                    }
+                });
                 true
             }
         };
@@ -365,7 +401,8 @@ unsafe extern "system" fn capture(code: i32, wp: WPARAM, lp: LPARAM) -> LRESULT 
                 };
                 let modifiers = Modifiers {
                     logo: pressed(VK_LWIN) || pressed(VK_RWIN),
-                    other: [VK_CONTROL, VK_MENU, VK_SHIFT].into_iter().any(pressed),
+                    other: [VK_CONTROL, VK_MENU].into_iter().any(pressed),
+                    shift: pressed(VK_SHIFT),
                 };
                 let (decision, logo_released) = MACHINE.with_borrow_mut(|machine| {
                     let decision = machine.on_key(key, modifiers);
@@ -412,15 +449,18 @@ mod tests {
     const LOGO: Modifiers = Modifiers {
         logo: true,
         other: false,
+        shift: false,
     };
     const ALL: Chords = Chords {
         spotlight: true,
         mission_control: true,
         workspaces: true,
+        moves: true,
     };
     const NONE: Modifiers = Modifiers {
         logo: false,
         other: false,
+        shift: false,
     };
 
     #[test]
@@ -455,6 +495,7 @@ mod tests {
         let shifted = Modifiers {
             logo: true,
             other: true,
+            shift: false,
         };
         assert_eq!(
             machine.on_key(key(VK_SPACE, false), shifted),
@@ -508,8 +549,35 @@ mod tests {
         let shifted = Modifiers {
             logo: true,
             other: true,
+            shift: false,
         };
         let mut all = Machine::new(ALL);
         assert_eq!(all.on_key(key(0x31, false), shifted), Decision::Pass);
+    }
+
+    #[test]
+    fn moves_with_shift_and_switches_without_it() {
+        let mut machine = Machine::new(ALL);
+        let shift = Modifiers {
+            logo: true,
+            other: false,
+            shift: true,
+        };
+        assert_eq!(
+            machine.on_key(key(0x33, false), shift),
+            Decision::Trigger(Action::MoveTo(2))
+        );
+        assert_eq!(machine.on_key(key(0x33, true), shift), Decision::Swallow);
+        assert_eq!(machine.take_pending(), Some(Action::MoveTo(2)));
+        // Shift with Space or Tab stays with Windows; moves need their own opt-in.
+        assert_eq!(machine.on_key(key(VK_SPACE, false), shift), Decision::Pass);
+        let mut without_moves = Machine::new(Chords {
+            moves: false,
+            ..ALL
+        });
+        assert_eq!(
+            without_moves.on_key(key(0x33, false), shift),
+            Decision::Pass
+        );
     }
 }

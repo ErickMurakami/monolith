@@ -329,6 +329,7 @@ pub fn run() -> io::Result<()> {
             settings.shortcut,
             settings.win_space_override,
             settings.workspace_shortcuts,
+            settings.desktop_moves,
         );
         (*state_ptr).chord = hotkey.chord();
         let order_path = config_path.with_file_name("dock-order.toml");

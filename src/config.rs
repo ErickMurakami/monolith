@@ -21,6 +21,9 @@ pub struct Config {
     pub hide_notification_content: bool,
     /// Experimental: Win+1-9 select desktops and Win+Tab opens Mission Control.
     pub workspace_shortcuts: bool,
+    /// Experimental: Win+Shift+1-9 move the focused window through the private
+    /// virtual desktop adapter, which disables itself on unsupported builds.
+    pub desktop_moves: bool,
     pub dock: bool,
     pub dock_pins: Vec<String>,
     pub dock_monitor: DockMonitor,
