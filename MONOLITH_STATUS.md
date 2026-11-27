@@ -115,10 +115,18 @@ The bridge now also serves the opt-in `workspace_shortcuts` setting: Win+1-9 sel
 
 ## Next task
 
-Supervised checks still open: Wi-Fi toggling (Bluetooth, dead keys and the simulated swipe-up are verified), and a physical touchpad swipe and physical keyboard as the final confirmation.
+### Founder feedback, 27 November 2026 (daily-driver trial)
 
-The opt-in private virtual desktop adapter (approved on 27 November 2026) now drives Win+Shift+1-9 with `desktop_moves = true`. `tests/desktop-move-smoke.ps1` moved another process's window to a temporary desktop without switching the view and cleaned up, in two runs. `fullscreen_workspaces = true` gives fullscreen applications their own desktop. `tests/fullscreen-workspace-smoke.ps1` passed three runs: entering fullscreen moved another process's window to a new desktop, and leaving it returned the window and removed the desktop.
+The founder is running the installed copy: `%LOCALAPPDATA%\Monolith\bin\monolith.exe`, launched by the Start menu shortcut "Monolith" with `--replace-taskbar`, and settings in `%LOCALAPPDATA%\Monolith\config.toml`, with every opt-in enabled. After changing the code, rebuild and copy the executable there; exit the running copy first (Dock > Exit).
 
-Then continue with:
-- Notification actions. The listener API exposes no way to invoke toast buttons; clicking the banner already restores the source app window.
-- Remaining Files work: transfers to network SMB shares and cancelling from the Shell progress dialog.
+Confirmed working: Win+Space, the Top Bar, and F11 creating a fullscreen workspace. Notifications looked right in the test captures but were not evaluated live.
+
+Fix in this order:
+1. **Thrown back to the fullscreen app after switching workspaces.** Likely cause: `desktop::is_fullscreen` requires `eligible()`, which rejects cloaked windows, and windows on another desktop are cloaked. When the founder leaves the fullscreen app's desktop, `FullscreenSpaces::plan` sees the window as no longer fullscreen and returns `Leave`, moving it onto the current desktop. Fix: treat a cloaked window, or one on another desktop (public `GetWindowDesktopId`), as unchanged and decide only on visible geometry. Add a unit case and extend `fullscreen-workspace-smoke.ps1` to switch away and back.
+2. **Taskbar (Dock) lost after F11.** Likely causes: the Dock and Top Bar exist only on the desktop where Monolith started, and fullscreen suppression hides the Dock while the fullscreen app is foreground. Fix: show Monolith surfaces on every desktop. Options are the private `IVirtualDesktopPinnedApps` service (CLSID `B5A399E7-1C87-46B8-88E9-FC5747B171BD`, IID `4CE81583-1E4C-4632-A621-07A53543148F`, in the same adapter) or verifying whether owned tool windows follow the current desktop. Then confirm the Dock reappears when leaving fullscreen.
+3. **Three-finger swipes do not change the workspace.** First read `HKCU\Software\Microsoft\Windows\CurrentVersion\PrecisionTouchPad`: on 27 November there were no three-finger values, meaning the Windows default (switch apps). Guide the founder to Settings > Touchpad > Three-finger gestures > "Switch desktops and show desktop". If the setting is already correct, investigate whether the Monolith surfaces disappearing on other desktops (item 2) makes the switch look broken.
+4. **Win+1-9 "not working well".** Ask the founder for the exact symptom. Suspects: interaction with item 1 (desktop switches pulling the fullscreen app back), the extra desktops created by fullscreen workspaces shifting positions, and the logo-release delay before switching.
+5. **Wi-Fi and Bluetooth toggles feel slow.** `SetStateAsync` completes after the radio changes. Show the requested state on the button immediately (optimistic, with a pending style), then confirm or revert from `StateChanged`.
+6. Evaluate notifications live with the founder.
+
+Other open items: notification actions (no listener API to invoke toast buttons), SMB share transfers, cancelling from the Shell progress dialog, and a physical touchpad and keyboard as final confirmation.
