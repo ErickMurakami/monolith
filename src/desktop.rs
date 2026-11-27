@@ -1,6 +1,8 @@
 //! Read-only desktop discovery and explicit, user-initiated window activation.
 
-use std::{collections::HashMap, io, mem::size_of, path::PathBuf, ptr::null_mut, rc::Rc};
+use std::{
+    collections::HashMap, ffi::c_void, io, mem::size_of, path::PathBuf, ptr::null_mut, rc::Rc,
+};
 use windows_sys::Win32::{
     Foundation::{CloseHandle, ERROR_INSUFFICIENT_BUFFER, GetLastError, HWND, LPARAM, RECT},
     Graphics::{
@@ -447,8 +449,9 @@ mod tests {
 
 /// An open window belonging to the application a notification names.
 ///
-/// Packaged apps match their application user model ID. Desktop apps whose ID is a
-/// known-folder path, such as `{FOLDERID}\Tool\tool.exe`, match the executable.
+/// Packaged apps match their application user model ID. Desktop apps match an
+/// explicit ID set on the window, or, when the ID is a known-folder path such as
+/// `{FOLDERID}\Tool\tool.exe`, the executable.
 pub fn app_window(app_id: &str) -> Option<WindowTarget> {
     let mut wanted = vec![AppIdentity::Packaged(app_id.to_lowercase())];
     if let Some(path) = known_folder_path(app_id) {
@@ -457,17 +460,59 @@ pub fn app_window(app_id: &str) -> Option<WindowTarget> {
     let snapshot = snapshot().ok()?;
     let mut image = vec![0_u16; 1024];
     let mut identities = HashMap::new();
-    snapshot
-        .windows
-        .iter()
-        .find(|window| {
-            identities
-                .entry(window.target.process)
-                .or_insert_with(|| process_identity(window.target.process, &mut image))
-                .as_ref()
-                .is_some_and(|(identity, _)| wanted.contains(identity))
+    let by_process = snapshot.windows.iter().find(|window| {
+        identities
+            .entry(window.target.process)
+            .or_insert_with(|| process_identity(window.target.process, &mut image))
+            .as_ref()
+            .is_some_and(|(identity, _)| wanted.contains(identity))
+    });
+    by_process
+        .or_else(|| {
+            let _apartment = Apartment::enter();
+            snapshot.windows.iter().find(|window| {
+                window_app_id(window.target.handle)
+                    .is_some_and(|explicit| explicit.eq_ignore_ascii_case(app_id))
+            })
         })
         .map(|window| window.target)
+}
+
+/// COM for the current thread, released only if this call initialised it.
+struct Apartment(bool);
+
+impl Apartment {
+    fn enter() -> Self {
+        use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx};
+        // S_OK and S_FALSE need a matching release; RPC_E_CHANGED_MODE does not.
+        Self(unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) }.is_ok())
+    }
+}
+
+impl Drop for Apartment {
+    fn drop(&mut self) {
+        if self.0 {
+            unsafe { windows::Win32::System::Com::CoUninitialize() };
+        }
+    }
+}
+
+/// The application user model ID an app set explicitly on its window, if any.
+fn window_app_id(hwnd: HWND) -> Option<String> {
+    use windows::Win32::{
+        Foundation::HWND as Window,
+        Storage::EnhancedStorage::PKEY_AppUserModel_ID,
+        System::Com::{CoTaskMemFree, StructuredStorage::PropVariantToStringAlloc},
+        UI::Shell::PropertiesSystem::{IPropertyStore, SHGetPropertyStoreForWindow},
+    };
+    unsafe {
+        let store: IPropertyStore = SHGetPropertyStoreForWindow(Window(hwnd)).ok()?;
+        let value = store.GetValue(&PKEY_AppUserModel_ID).ok()?;
+        let text = PropVariantToStringAlloc(&value).ok()?;
+        let id = text.to_string().ok();
+        CoTaskMemFree(Some(text.0 as *const c_void));
+        id.filter(|id| !id.is_empty())
+    }
 }
 
 /// Expand a `{known-folder-GUID}\relative` application ID to a full path.
@@ -609,5 +654,51 @@ mod app_id_tests {
             "{path}"
         );
         assert!(known_folder_path("Microsoft.WindowsTerminal_8wekyb3d8bbwe!App").is_none());
+    }
+
+    #[test]
+    fn reads_an_explicit_window_application_id() {
+        use windows::Win32::{
+            Foundation::HWND as Window,
+            Storage::EnhancedStorage::PKEY_AppUserModel_ID,
+            System::Com::StructuredStorage::PROPVARIANT,
+            UI::Shell::PropertiesSystem::{IPropertyStore, SHGetPropertyStoreForWindow},
+        };
+        use windows_sys::Win32::UI::WindowsAndMessaging::{CreateWindowExW, DestroyWindow};
+        let _apartment = Apartment::enter();
+        let class: Vec<u16> = "STATIC".encode_utf16().chain([0]).collect();
+        let hwnd = unsafe {
+            CreateWindowExW(
+                0,
+                class.as_ptr(),
+                std::ptr::null(),
+                0,
+                0,
+                0,
+                1,
+                1,
+                null_mut(),
+                null_mut(),
+                null_mut(),
+                null_mut(),
+            )
+        };
+        assert!(!hwnd.is_null());
+        assert_eq!(window_app_id(hwnd), None);
+        unsafe {
+            let store: IPropertyStore = SHGetPropertyStoreForWindow(Window(hwnd)).unwrap();
+            store
+                .SetValue(
+                    &PKEY_AppUserModel_ID,
+                    &PROPVARIANT::from("Monolith.Verification.Window"),
+                )
+                .unwrap();
+            store.Commit().unwrap();
+        }
+        assert_eq!(
+            window_app_id(hwnd).as_deref(),
+            Some("Monolith.Verification.Window")
+        );
+        unsafe { DestroyWindow(hwnd) };
     }
 }
