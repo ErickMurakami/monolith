@@ -820,9 +820,9 @@ function Invoke-DockSmoke($Application) {
         Wait-Until {
             [DesktopSmoke]::IsWindowVisible([DesktopSmoke]::FindClass('MonolithSpotlight'))
         } 'Search did not open Spotlight.'
-        $exit = [DesktopSmoke]::FindWindowEx($dockWindow, [IntPtr]::Zero, 'Button', 'Exit')
-        if (![DesktopSmoke]::Click($exit)) { throw 'Exit could not be clicked.' }
-        Wait-Until { $launcher.HasExited } 'Exit did not stop the process.'
+        # Exit lives in the Dock context menu; close through the window, as the menu does.
+        [void][DesktopSmoke]::Post($dockWindow, 0x10, [UIntPtr]::Zero, [IntPtr]::Zero)
+        Wait-Until { $launcher.HasExited } 'Closing the Dock did not stop the process.'
 
         $dockWindow = [IntPtr]::Zero
         $launcher = Start-Process -FilePath $Application -ArgumentList '--dock', '--safe-mode' -PassThru

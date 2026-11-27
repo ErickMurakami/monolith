@@ -46,6 +46,12 @@ const REFRESH: usize = 1;
 const HIDE: usize = 2;
 const SPOTLIGHT: u32 = 1;
 const EXIT: u32 = 2;
+const MISSION: u32 = 3;
+const FILES: u32 = 4;
+const SETTINGS: u32 = 5;
+const TRASH: u32 = 6;
+const LEFT_TILES: [u32; 3] = [MISSION, SPOTLIGHT, FILES];
+const RIGHT_TILES: [u32; 2] = [SETTINGS, TRASH];
 const FIRST_WINDOW: u32 = 10;
 const CAPACITY: usize = 8;
 const PINS_READY: u32 = WM_APP + 22;
@@ -102,6 +108,8 @@ struct State {
     covered: bool,
     /// The pointer revealed the Dock over a fullscreen window.
     revealed: bool,
+    /// Client x positions of the separators between tile groups.
+    separators: [i32; 2],
     menu_open: bool,
     preview: Option<(HWND, Preview)>,
     icons: Option<icons::Cache>,
@@ -217,6 +225,7 @@ impl Dock {
                     expanded: !settings.auto_hide,
                     covered: false,
                     revealed: false,
+                    separators: [0; 2],
                     menu_open: false,
                     preview: None,
                     icons: icons::Cache::new(handle).ok(),
@@ -233,7 +242,7 @@ impl Dock {
             }
             let state = &raw mut *dock.state;
             SetWindowLongPtrW(handle, GWLP_USERDATA, state as isize);
-            for id in [SPOTLIGHT, EXIT]
+            for id in [SPOTLIGHT, EXIT, MISSION, FILES, SETTINGS, TRASH]
                 .into_iter()
                 .chain(FIRST_WINDOW..FIRST_WINDOW + CAPACITY as u32)
             {
@@ -345,6 +354,23 @@ unsafe fn tooltips(hwnd: HWND, instance: *mut c_void, buttons: &[HWND]) -> HWND 
         SendMessageW(tooltip, TTM_ACTIVATE, 1, 0);
         SendMessageW(tooltip, TTM_SETDELAYTIME, TTDT_INITIAL as usize, 600);
         tooltip
+    }
+}
+
+/// Accessible names and tooltips for the system tiles; the tiles draw glyphs.
+fn system_label(id: u32, portuguese: bool) -> &'static str {
+    match (id, portuguese) {
+        (MISSION, false) => "Mission Control",
+        (MISSION, true) => "Controle de Janelas",
+        (SPOTLIGHT, false) => "Search",
+        (SPOTLIGHT, true) => "Buscar",
+        (FILES, false) => "Files",
+        (FILES, true) => "Arquivos",
+        (SETTINGS, false) => "Control Center",
+        (SETTINGS, true) => "Central de Controle",
+        (TRASH, false) => "Recycle Bin",
+        (TRASH, true) => "Lixeira",
+        _ => "",
     }
 }
 
@@ -772,7 +798,7 @@ unsafe fn refresh(hwnd: HWND, state: *mut State) {
         // Compact, near-square tiles with predictable spacing.
         let step = scale(44).min(((work.right - work.left - 2 * inset) / 2).max(1));
         let capacity =
-            (((work.right - work.left - 2 * inset) / step) - 2).clamp(0, CAPACITY as i32) as usize;
+            (((work.right - work.left - 2 * inset) / step) - 6).clamp(0, CAPACITY as i32) as usize;
         let inventory = desktop::snapshot().ok().map(Rc::new);
         let mut groups = inventory
             .as_ref()
@@ -789,8 +815,14 @@ unsafe fn refresh(hwnd: HWND, state: *mut State) {
         groups.truncate(capacity - pin_count);
         (*state).groups = groups;
         (&mut *state).request_icons();
-        let button_count = pin_count + (*state).groups.len() + 2;
-        let width = button_count as i32 * step + 2 * inset;
+        // Mission Control, Search and Files on the left; Control Center and the Recycle
+        // Bin on the right; applications between them, as in the approved reference.
+        let apps = pin_count + (*state).groups.len();
+        let separator = scale(13);
+        let app_left = inset + LEFT_TILES.len() as i32 * step + separator;
+        let right_left = app_left + apps as i32 * step + separator;
+        let width = right_left + RIGHT_TILES.len() as i32 * step + inset;
+        (*state).separators = [app_left - separator / 2, right_left - separator / 2];
         // 40 DIP plus margin still fits the native taskbar band at 125% scaling.
         let height = scale(40);
         let left = work.left + ((work.right - work.left - width) / 2).max(0);
@@ -799,37 +831,43 @@ unsafe fn refresh(hwnd: HWND, state: *mut State) {
             band.top + (band.bottom - band.top - height) / 2
         });
 
-        let spotlight = if (*state).portuguese {
-            "Buscar"
-        } else {
-            "Search"
-        };
-        let exit = if (*state).portuguese { "Sair" } else { "Exit" };
+        let portuguese = (*state).portuguese;
         let buttons = &(*state).buttons;
         let groups = &(*state).groups;
         let pins = &(*state).pins;
-        for (index, &button) in buttons.iter().enumerate() {
-            let (position, label) = match index {
-                0 => (0, spotlight.to_owned()),
-                1 => (button_count as i32 - 1, exit.to_owned()),
-                _ => {
-                    let label = if index - 2 < pin_count {
-                        Some(pins[index - 2].name.clone())
-                    } else {
-                        groups.get(index - 2 - pin_count).map(WindowGroup::caption)
-                    };
-                    let Some(label) = label else {
-                        ShowWindow(button, SW_HIDE);
-                        continue;
-                    };
-                    (index as i32 - 1, label)
-                }
+        for &button in buttons.iter() {
+            let id = GetDlgCtrlID(button) as u32;
+            let (x, label) = if let Some(slot) = LEFT_TILES.iter().position(|tile| *tile == id) {
+                (
+                    inset + slot as i32 * step,
+                    system_label(id, portuguese).to_owned(),
+                )
+            } else if let Some(slot) = RIGHT_TILES.iter().position(|tile| *tile == id) {
+                (
+                    right_left + slot as i32 * step,
+                    system_label(id, portuguese).to_owned(),
+                )
+            } else if let Some(index) = id.checked_sub(FIRST_WINDOW).map(|index| index as usize) {
+                let label = if index < pin_count {
+                    Some(pins[index].name.clone())
+                } else {
+                    groups.get(index - pin_count).map(WindowGroup::caption)
+                };
+                let Some(label) = label else {
+                    ShowWindow(button, SW_HIDE);
+                    continue;
+                };
+                (app_left + index as i32 * step, label)
+            } else {
+                // Exit lives in the context menu, not in the Dock.
+                ShowWindow(button, SW_HIDE);
+                continue;
             };
             SetWindowTextW(button, wide(&label).as_ptr());
             SetWindowPos(
                 button,
                 null_mut(),
-                inset + position * step,
+                x,
                 inset,
                 step - scale(4),
                 height - 2 * inset,
@@ -926,7 +964,11 @@ unsafe fn draw(state: *mut State, item: &DRAWITEMSTRUCT) {
         SetTextColor(item.hDC, palette.text);
         // System actions use monochrome Segoe Fluent glyphs: search and power.
         let glyph = match item.CtlID {
+            MISSION => Some("\u{E8A9}"),
             SPOTLIGHT => Some("\u{E721}"),
+            FILES => Some("\u{E8B7}"),
+            SETTINGS => Some("\u{E713}"),
+            TRASH => Some("\u{E74D}"),
             EXIT => Some("\u{E7E8}"),
             _ => None,
         };
@@ -1032,6 +1074,30 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
                     EXIT => {
                         PostMessageW((*state).launcher, WM_CLOSE, 0, 0);
                     }
+                    MISSION => {
+                        PostMessageW((*state).launcher, crate::mission::OPEN, hwnd as usize, 0);
+                    }
+                    FILES => {
+                        PostMessageW((*state).launcher, crate::files::OPEN, 0, 0);
+                    }
+                    SETTINGS => {
+                        PostMessageW(
+                            (*state).launcher,
+                            crate::control_center::OPEN,
+                            hwnd as usize,
+                            0,
+                        );
+                    }
+                    TRASH => {
+                        windows_sys::Win32::UI::Shell::ShellExecuteW(
+                            hwnd,
+                            wide("open").as_ptr(),
+                            wide("shell:RecycleBinFolder").as_ptr(),
+                            std::ptr::null(),
+                            std::ptr::null(),
+                            SW_SHOWNORMAL,
+                        );
+                    }
                     FIRST_WINDOW.. => {
                         let index = (id - FIRST_WINDOW) as usize;
                         // Shift+click on a pin starts another instance, as on the Windows taskbar.
@@ -1094,6 +1160,22 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wp: WPARAM, lp: 
                 GetClientRect(hwnd, &mut area);
                 if (*state).expanded {
                     FillRect(wp as HDC, &area, (*state).brush);
+                    // Subtle separators between system actions and applications.
+                    let palette = (*state).palette;
+                    let inset = overlay::scale(12, (*state).dpi);
+                    for x in (*state).separators {
+                        if x > 0 {
+                            let line = RECT {
+                                left: x,
+                                top: area.top + inset,
+                                right: x + 1,
+                                bottom: area.bottom - inset,
+                            };
+                            let previous = SetDCBrushColor(wp as HDC, palette.pressed);
+                            FillRect(wp as HDC, &line, GetStockObject(DC_BRUSH) as HBRUSH);
+                            SetDCBrushColor(wp as HDC, previous);
+                        }
+                    }
                 } else {
                     let previous = SetDCBrushColor(wp as HDC, (*state).palette.pressed);
                     FillRect(wp as HDC, &area, GetStockObject(DC_BRUSH) as HBRUSH);
