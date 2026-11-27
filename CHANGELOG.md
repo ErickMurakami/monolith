@@ -45,4 +45,5 @@
 - Control Center shows Wi-Fi and Bluetooth state and switches the radios directly.
 - Notification text can be withheld from banners and history.
 - Ctrl+Enter in Spotlight opens an application in a new native workspace.
+- Clicking a notification banner brings up the source app's open window.
 - Added an experimental Dock taskbar replacement mode with session-only visibility and native recovery.

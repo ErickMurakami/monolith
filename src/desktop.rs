@@ -445,6 +445,73 @@ mod tests {
     }
 }
 
+/// An open window belonging to the application a notification names.
+///
+/// Packaged apps match their application user model ID. Desktop apps whose ID is a
+/// known-folder path, such as `{FOLDERID}\Tool\tool.exe`, match the executable.
+pub fn app_window(app_id: &str) -> Option<WindowTarget> {
+    let mut wanted = vec![AppIdentity::Packaged(app_id.to_lowercase())];
+    if let Some(path) = known_folder_path(app_id) {
+        wanted.push(AppIdentity::Executable(path.to_lowercase()));
+    }
+    let snapshot = snapshot().ok()?;
+    let mut image = vec![0_u16; 1024];
+    let mut identities = HashMap::new();
+    snapshot
+        .windows
+        .iter()
+        .find(|window| {
+            identities
+                .entry(window.target.process)
+                .or_insert_with(|| process_identity(window.target.process, &mut image))
+                .as_ref()
+                .is_some_and(|(identity, _)| wanted.contains(identity))
+        })
+        .map(|window| window.target)
+}
+
+/// Expand a `{known-folder-GUID}\relative` application ID to a full path.
+fn known_folder_path(app_id: &str) -> Option<String> {
+    use windows_sys::Win32::{
+        System::Com::CoTaskMemFree,
+        UI::Shell::{KF_FLAG_DONT_VERIFY, SHGetKnownFolderPath},
+    };
+    let (folder, relative) = app_id.split_once('\\')?;
+    let folder = parse_guid(folder)?;
+    let mut base = null_mut();
+    let status =
+        unsafe { SHGetKnownFolderPath(&folder, KF_FLAG_DONT_VERIFY as u32, null_mut(), &mut base) };
+    if status < 0 || base.is_null() {
+        unsafe { CoTaskMemFree(base.cast()) };
+        return None;
+    }
+    let length = (0..)
+        .take_while(|&index| unsafe { *base.add(index) } != 0)
+        .count();
+    let root = String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(base, length) });
+    unsafe { CoTaskMemFree(base.cast()) };
+    Some(format!("{}\\{relative}", root.trim_end_matches('\\')))
+}
+
+/// Parse `{xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx}`.
+fn parse_guid(text: &str) -> Option<windows_sys::core::GUID> {
+    let inner = text.strip_prefix('{')?.strip_suffix('}')?;
+    let parts: Vec<&str> = inner.split('-').collect();
+    let [a, b, c, d, e] = parts.as_slice() else {
+        return None;
+    };
+    if [a.len(), b.len(), c.len(), d.len(), e.len()] != [8, 4, 4, 4, 12] {
+        return None;
+    }
+    let tail = u64::from_str_radix(&format!("{d}{e}"), 16).ok()?;
+    Some(windows_sys::core::GUID {
+        data1: u32::from_str_radix(a, 16).ok()?,
+        data2: u16::from_str_radix(b, 16).ok()?,
+        data3: u16::from_str_radix(c, 16).ok()?,
+        data4: tail.to_be_bytes(),
+    })
+}
+
 /// Resolve the executable each Start menu shortcut launches so a running group can
 /// adopt its pin. Call on a worker STA: loading a link reads only the `.lnk` file and
 /// neither resolves a missing target nor searches the filesystem.
@@ -519,5 +586,28 @@ mod shortcut_tests {
         ] {
             assert!(shortcut_identity(target).is_none(), "adopted {target}");
         }
+    }
+}
+
+#[cfg(test)]
+mod app_id_tests {
+    use super::*;
+
+    #[test]
+    fn expands_known_folder_application_ids() {
+        let guid = parse_guid("{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}").unwrap();
+        assert_eq!(guid.data1, 0x1AC1_4E77);
+        assert_eq!(guid.data4, [0xB7, 0x44, 0x2E, 0xB1, 0xAE, 0x51, 0x98, 0xB7]);
+        assert!(parse_guid("Microsoft.WindowsTerminal_8wekyb3d8bbwe!App").is_none());
+        let path = known_folder_path(
+            r"{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\WindowsPowerShell\v1.0\powershell.exe",
+        )
+        .unwrap()
+        .to_lowercase();
+        assert!(
+            path.ends_with(r"\system32\windowspowershell\v1.0\powershell.exe"),
+            "{path}"
+        );
+        assert!(known_folder_path("Microsoft.WindowsTerminal_8wekyb3d8bbwe!App").is_none());
     }
 }

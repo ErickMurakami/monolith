@@ -61,6 +61,8 @@ pub struct Incoming {
     pub body: String,
     /// The source app's own logo, when Windows provides one.
     pub icon: Option<Artwork>,
+    /// The application user model ID, used to find the source app's window.
+    pub app_id: String,
 }
 
 thread_local! {
@@ -299,6 +301,11 @@ fn describe(notification: &UserNotification) -> Option<Incoming> {
         .filter_map(|text| text.Text().ok().map(|text| text.to_string()))
         .collect();
     let mut incoming = compose(app, texts)?;
+    incoming.app_id = notification
+        .AppInfo()
+        .and_then(|info| info.AppUserModelId())
+        .map(|id| id.to_string())
+        .unwrap_or_default();
     incoming.icon = notification
         .AppInfo()
         .and_then(|info| info.DisplayInfo())
@@ -404,6 +411,7 @@ fn compose(app: String, texts: Vec<String>) -> Option<Incoming> {
         title,
         body,
         icon: None,
+        app_id: String::new(),
     })
 }
 
@@ -605,7 +613,15 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                 0
             }
             WM_LBUTTONUP => {
-                // Dismiss only the Monolith banner; the notification stays in Windows.
+                // Bring up the source app when one of its windows is open. The click
+                // gives this process foreground rights. Windows keeps the notification.
+                if let Some(target) = (*state)
+                    .current
+                    .as_ref()
+                    .and_then(|incoming| desktop::app_window(&incoming.app_id))
+                {
+                    let _ = target.activate();
+                }
                 KillTimer(hwnd, HIDE);
                 ShowWindow(hwnd, SW_HIDE);
                 (*state).current = None;
