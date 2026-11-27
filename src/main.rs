@@ -4,6 +4,8 @@
 mod artwork;
 #[cfg(windows)]
 mod audio;
+#[cfg(windows)]
+mod brightness;
 #[cfg(any(windows, test))]
 mod calculator;
 #[cfg(any(windows, test))]

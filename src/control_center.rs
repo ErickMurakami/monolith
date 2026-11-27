@@ -1,5 +1,6 @@
 use crate::{
     audio::{self, Audio, Volume},
+    brightness::{self, Brightness},
     overlay::{self, Palette},
     windows::{report_for, wide},
 };
@@ -24,6 +25,8 @@ const VOLUME_LABEL: usize = 1;
 const SLIDER: usize = 2;
 const MUTE: usize = 3;
 const SETTINGS_LABEL: usize = 4;
+const BRIGHTNESS_LABEL: usize = 5;
+const BRIGHTNESS_SLIDER: usize = 6;
 const FIRST_SETTING: usize = 10;
 // The SDK defines this trackbar message as WM_USER + 0.
 const TBM_GETPOS: u32 = WM_USER;
@@ -49,6 +52,9 @@ struct State {
     audio: Option<Audio>,
     volume: Option<Volume>,
     drag_endpoint: Option<u64>,
+    brightness: Option<Brightness>,
+    /// The internal panel level, once the worker reports one.
+    brightness_level: Option<u8>,
     palette: Palette,
     portuguese: bool,
     font: HFONT,
@@ -121,6 +127,8 @@ impl ControlCenter {
                     audio: None,
                     volume: None,
                     drag_endpoint: None,
+                    brightness: None,
+                    brightness_level: None,
                     palette,
                     portuguese,
                     font: null_mut(),
@@ -170,6 +178,24 @@ impl ControlCenter {
                 BS_OWNERDRAW as u32 | WS_TABSTOP | WS_DISABLED,
                 MUTE,
             )?;
+            // Hidden until the worker confirms an internal panel exposes brightness.
+            let brightness_name = label(portuguese, "Brightness", "Brilho");
+            let brightness_label = child(
+                static_class.as_ptr(),
+                brightness_name,
+                SS_CENTERIMAGE,
+                BRIGHTNESS_LABEL,
+            )?;
+            let brightness_slider = child(
+                TRACKBAR_CLASSW,
+                brightness_name,
+                TBS_NOTICKS | WS_TABSTOP,
+                BRIGHTNESS_SLIDER,
+            )?;
+            SendMessageW(brightness_slider, TBM_SETRANGEMAX, 0, 100);
+            SendMessageW(brightness_slider, TBM_SETLINESIZE, 0, 1);
+            ShowWindow(brightness_label, SW_HIDE);
+            ShowWindow(brightness_slider, SW_HIDE);
             child(
                 static_class.as_ptr(),
                 label(portuguese, "Windows settings", "Configurações do Windows"),
@@ -197,6 +223,7 @@ impl ControlCenter {
             place(hwnd, state, monitor);
             update_power(hwnd, portuguese);
             (*state).audio = Audio::start(hwnd).ok();
+            (*state).brightness = Brightness::start(hwnd).ok();
             if (*state).audio.is_none() {
                 refresh(hwnd, state, None);
             }
@@ -299,7 +326,13 @@ unsafe fn place(hwnd: HWND, state: *mut State, monitor: HMONITOR) {
         let scale = |dip| overlay::scale(dip, dpi);
         let margin = scale(8);
         let width = scale(324).min((work.right - work.left - 2 * margin).max(1));
-        let height = scale(248);
+        // A brightness row shifts the settings section down.
+        let shift = if (*state).brightness_level.is_some() {
+            60
+        } else {
+            0
+        };
+        let height = scale(248 + shift);
         let x = (work.right - width - margin).max(work.left);
         let y = (work.top + scale(36))
             .min(work.bottom - height)
@@ -349,13 +382,17 @@ unsafe fn place(hwnd: HWND, state: *mut State, monitor: HMONITOR) {
         let mute_width = scale(82).min(half);
         layout(SLIDER, padding, 33, body - mute_width - gap, 29);
         layout(MUTE, padding + body - mute_width, 33, mute_width, 29);
-        layout(SETTINGS_LABEL, padding, 72, body, 25);
+        if shift > 0 {
+            layout(BRIGHTNESS_LABEL, padding, 69, body, 22);
+            layout(BRIGHTNESS_SLIDER, padding, 93, body, 29);
+        }
+        layout(SETTINGS_LABEL, padding, 72 + shift, body, 25);
         for index in 0..SETTINGS.len() {
             let left = padding + (index as i32 % 2) * (half + gap);
             layout(
                 FIRST_SETTING + index,
                 left,
-                100 + index as i32 / 2 * 35,
+                100 + shift + index as i32 / 2 * 35,
                 half,
                 31,
             );
@@ -498,6 +535,56 @@ unsafe fn paint_slider(hwnd: HWND, draw: &NMCUSTOMDRAW, palette: Palette) {
     }
 }
 
+unsafe fn set_brightness_label(hwnd: HWND, state: *mut State, level: u8) {
+    unsafe {
+        let name = label((*state).portuguese, "Brightness", "Brilho");
+        SetWindowTextW(
+            GetDlgItem(hwnd, BRIGHTNESS_LABEL as i32),
+            wide(&format!("{name} · {level}%")).as_ptr(),
+        );
+    }
+}
+
+/// Apply a level reported by the worker, revealing the row the first time.
+unsafe fn show_brightness(hwnd: HWND, state: *mut State, reported: WPARAM) {
+    unsafe {
+        if reported == brightness::UNAVAILABLE {
+            return;
+        }
+        let level = reported.min(100) as u8;
+        let first = (*state).brightness_level.is_none();
+        (*state).brightness_level = Some(level);
+        let label_window = GetDlgItem(hwnd, BRIGHTNESS_LABEL as i32);
+        let slider = GetDlgItem(hwnd, BRIGHTNESS_SLIDER as i32);
+        set_brightness_label(hwnd, state, level);
+        // Do not move the thumb under a drag in progress.
+        if GetCapture() != slider {
+            SendMessageW(slider, TBM_SETPOS, 1, level as isize);
+        }
+        if first {
+            for child in [label_window, slider] {
+                SendMessageW(child, WM_SETFONT, (*state).font as usize, 0);
+            }
+            place(
+                hwnd,
+                state,
+                MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST),
+            );
+            ShowWindow(label_window, SW_SHOW);
+            ShowWindow(slider, SW_SHOW);
+            // The panel grew; erase stale pixels left by the moved settings section.
+            RedrawWindow(
+                hwnd,
+                std::ptr::null(),
+                null_mut(),
+                RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN,
+            );
+        } else {
+            InvalidateRect(slider, std::ptr::null(), 1);
+        }
+    }
+}
+
 unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     unsafe {
         let state = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut State;
@@ -508,6 +595,10 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
             audio::READY => {
                 let volume = (*state).audio.as_ref().and_then(Audio::take_update);
                 refresh(hwnd, state, volume);
+                0
+            }
+            brightness::READY => {
+                show_brightness(hwnd, state, wp);
                 0
             }
             WM_CLOSE | WM_ACTIVATE if msg == WM_CLOSE || wp as u16 == WA_INACTIVE as u16 => {
@@ -570,9 +661,20 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                 change_volume(hwnd, state, wp, lp as HWND);
                 0
             }
+            WM_HSCROLL if lp as HWND == GetDlgItem(hwnd, BRIGHTNESS_SLIDER as i32) => {
+                let level = SendMessageW(lp as HWND, TBM_GETPOS, 0, 0).clamp(0, 100) as u8;
+                set_brightness_label(hwnd, state, level);
+                InvalidateRect(lp as HWND, std::ptr::null(), 1);
+                if let Some(brightness) = &(*state).brightness {
+                    brightness.set(level);
+                }
+                0
+            }
             WM_NOTIFY if lp != 0 => {
                 let header = &*(lp as *const NMHDR);
-                if header.idFrom == SLIDER && header.code == NM_CUSTOMDRAW {
+                if matches!(header.idFrom, SLIDER | BRIGHTNESS_SLIDER)
+                    && header.code == NM_CUSTOMDRAW
+                {
                     let draw = &*(lp as *const NMCUSTOMDRAW);
                     if draw.dwDrawStage == CDDS_PREPAINT {
                         paint_slider(hwnd, draw, (*state).palette);
