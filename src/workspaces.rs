@@ -94,7 +94,7 @@ impl Workspaces {
 }
 
 /// The name a user gave the desktop in Task View, if any.
-fn name(id: &DesktopId) -> Option<String> {
+pub fn name(id: &DesktopId) -> Option<String> {
     let key: Vec<u16> = format!(r"{DESKTOPS}\Desktops\{}", guid_text(id))
         .encode_utf16()
         .chain([0])
@@ -410,6 +410,28 @@ pub struct FullscreenSpaces {
 }
 
 impl FullscreenSpaces {
+    /// At startup, adopt a fullscreen foreground window already alone on its
+    /// desktop, as one Monolith gave its own desktop before restarting, instead of
+    /// creating another. Leaving fullscreen then leaves it where it is.
+    pub fn adopt(&mut self) {
+        let Some(window) = crate::desktop::fullscreen_foreground() else {
+            return;
+        };
+        let alone = crate::desktop::snapshot().is_ok_and(|snapshot| {
+            snapshot
+                .windows
+                .iter()
+                .all(|other| other.target.handle() == window)
+        });
+        if let Some(current) = current_id().filter(|_| alone) {
+            self.spaces.push(Space {
+                window: window as isize,
+                origin: current,
+                created: current,
+            });
+        }
+    }
+
     pub fn check(&mut self, mover: &crate::virtual_desktops::Mover) {
         use windows_sys::Win32::Foundation::HWND;
         // A tracked window on another desktop is cloaked, which says nothing about

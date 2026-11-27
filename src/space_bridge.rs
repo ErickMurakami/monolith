@@ -359,6 +359,9 @@ unsafe fn run_desktop_worker(fullscreen: bool, close_empty: bool, ready: mpsc::S
         }
         let _ = ready.send(true);
         let mut spaces = crate::workspaces::FullscreenSpaces::default();
+        if fullscreen {
+            spaces.adopt();
+        }
         if close_empty {
             crate::workspaces::close_empty_desktops(&mover);
         }

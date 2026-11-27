@@ -6,7 +6,9 @@ use std::{
 use windows_sys::Win32::{
     Foundation::{CloseHandle, ERROR_INSUFFICIENT_BUFFER, GetLastError, HWND, LPARAM, RECT},
     Graphics::{
-        Dwm::{DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS, DwmGetWindowAttribute},
+        Dwm::{
+            DWM_CLOAKED_SHELL, DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS, DwmGetWindowAttribute,
+        },
         Gdi::{
             EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITOR_DEFAULTTONULL,
             MONITORINFO, MonitorFromWindow,
@@ -221,7 +223,7 @@ pub fn snapshot() -> io::Result<Snapshot> {
     let mut windows: Vec<_> = handles
         .into_iter()
         .filter(|&hwnd| hwnd != shell && hwnd != desktop)
-        .filter_map(|hwnd| describe(hwnd, own_process, foreground, &displays))
+        .filter_map(|hwnd| describe(hwnd, own_process, foreground, &displays, false))
         .map(Rc::new)
         .collect();
     // Preserve native enumeration order for the other windows.
@@ -241,6 +243,12 @@ fn identity(hwnd: HWND) -> Option<(u32, u32)> {
 }
 
 fn eligible(hwnd: HWND) -> bool {
+    eligible_on(hwnd, false)
+}
+
+/// Like `eligible`, optionally also accepting windows the shell cloaks because
+/// they sit on another virtual desktop.
+fn eligible_on(hwnd: HWND, other_desktops: bool) -> bool {
     // These read-only queries tolerate a window closing mid-enumeration.
     unsafe {
         if IsWindowVisible(hwnd) == 0 {
@@ -259,7 +267,7 @@ fn eligible(hwnd: HWND) -> bool {
             (&raw mut cloaked).cast(),
             size_of::<u32>() as u32,
         );
-        status < 0 || cloaked == 0
+        status < 0 || cloaked == 0 || (other_desktops && cloaked == DWM_CLOAKED_SHELL)
     }
 }
 
@@ -268,9 +276,10 @@ fn describe(
     own_process: u32,
     foreground: HWND,
     displays: &[Monitor],
+    other_desktops: bool,
 ) -> Option<Window> {
     let (process, thread) = identity(hwnd)?;
-    if process == own_process || !eligible(hwnd) {
+    if process == own_process || !eligible_on(hwnd, other_desktops) {
         return None;
     }
     // For other processes this reads the system-managed caption without
@@ -343,6 +352,10 @@ pub enum ActivationError {
 }
 
 impl WindowTarget {
+    pub fn handle(self) -> HWND {
+        self.handle
+    }
+
     pub fn preview_source(self) -> Option<HWND> {
         (self.available() && unsafe { IsIconic(self.handle) } == 0).then_some(self.handle)
     }
@@ -362,7 +375,8 @@ impl WindowTarget {
     }
 
     fn available(self) -> bool {
-        identity(self.handle) == Some((self.process, self.thread)) && eligible(self.handle)
+        // A window on another desktop stays a valid target: activating it switches there.
+        identity(self.handle) == Some((self.process, self.thread)) && eligible_on(self.handle, true)
     }
 
     pub fn activate(self) -> Result<(), ActivationError> {
@@ -448,6 +462,51 @@ pub fn occupied_desktops() -> Vec<[u8; 16]> {
         }
     }
     occupied
+}
+
+/// Ordinary windows of other processes for each desktop in `ids` (the registry's
+/// binary GUID layout), in Z order, including windows cloaked on other desktops.
+pub fn windows_by_desktop(ids: &[[u8; 16]]) -> Vec<Vec<Rc<Window>>> {
+    use windows::Win32::{
+        Foundation::HWND as Handle,
+        System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance},
+        UI::Shell::{IVirtualDesktopManager, VirtualDesktopManager},
+    };
+    let mut groups = vec![Vec::new(); ids.len()];
+    let _apartment = Apartment::enter();
+    let Ok(manager) = (unsafe {
+        CoCreateInstance::<_, IVirtualDesktopManager>(
+            &VirtualDesktopManager,
+            None,
+            CLSCTX_INPROC_SERVER,
+        )
+    }) else {
+        return groups;
+    };
+    let mut handles: Vec<HWND> = Vec::new();
+    if unsafe { EnumWindows(Some(collect_window), (&raw mut handles) as LPARAM) } == 0 {
+        return groups;
+    }
+    let displays = monitors();
+    let foreground = unsafe { GetForegroundWindow() };
+    let own = std::process::id();
+    for hwnd in handles {
+        let Some(window) = describe(hwnd, own, foreground, &displays, true) else {
+            continue;
+        };
+        let Ok(id) = (unsafe { manager.GetWindowDesktopId(Handle(hwnd)) }) else {
+            continue;
+        };
+        let mut bytes = [0_u8; 16];
+        bytes[..4].copy_from_slice(&id.data1.to_le_bytes());
+        bytes[4..6].copy_from_slice(&id.data2.to_le_bytes());
+        bytes[6..8].copy_from_slice(&id.data3.to_le_bytes());
+        bytes[8..].copy_from_slice(&id.data4);
+        if let Some(index) = ids.iter().position(|known| *known == bytes) {
+            groups[index].push(Rc::new(window));
+        }
+    }
+    groups
 }
 
 /// Whether DWM hides `hwnd`, as it does for windows on another virtual desktop.
