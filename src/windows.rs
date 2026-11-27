@@ -184,6 +184,14 @@ pub(crate) unsafe fn shell_menu(hwnd: HWND, launcher: HWND, portuguese: bool) {
     }
 }
 
+/// Start menu shortcuts, plus Apps folder entries such as packaged apps that have
+/// no shortcut file.
+fn catalogue() -> Vec<App> {
+    let mut apps = search::discover(roots());
+    search::merge(&mut apps, search::shell_apps());
+    apps
+}
+
 fn roots() -> impl Iterator<Item = PathBuf> {
     ["APPDATA", "ProgramData"]
         .into_iter()
@@ -294,9 +302,7 @@ pub fn run() -> io::Result<()> {
         (*state_ptr).chord = hotkey.chord();
         let order_path = config_path.with_file_name("dock-order.toml");
         let pins = if show_dock && !settings.dock_pins.is_empty() {
-            let apps = (*state_ptr)
-                .apps
-                .get_or_insert_with(|| search::discover(roots()));
+            let apps = (*state_ptr).apps.get_or_insert_with(catalogue);
             let mut pins = search::resolve_pins(apps, &settings.dock_pins);
             search::apply_pin_order(&mut pins, &config::load_dock_order(&order_path));
             pins
@@ -729,7 +735,7 @@ unsafe fn show(hwnd: HWND, state: *mut State, dock: Option<&Dock>) {
         SetFocus((*state).edit);
         SendMessageW((*state).edit, EM_SETSEL, 0, -1);
         if (*state).apps.is_none() {
-            (*state).apps = Some(search::discover(roots()));
+            (*state).apps = Some(catalogue());
         }
         if opening {
             refresh(state);

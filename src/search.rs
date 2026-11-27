@@ -74,6 +74,69 @@ pub fn discover(roots: impl IntoIterator<Item = PathBuf>) -> Vec<App> {
     apps
 }
 
+/// Add catalogue entries whose names are not already present, keeping name order.
+pub fn merge(apps: &mut Vec<App>, extra: Vec<App>) {
+    let mut seen: HashSet<String> = apps.iter().map(|app| app.name.to_lowercase()).collect();
+    apps.extend(
+        extra
+            .into_iter()
+            .filter(|app| !app.name.trim().is_empty() && seen.insert(app.name.to_lowercase())),
+    );
+    apps.sort_by_cached_key(|app| app.name.to_lowercase());
+}
+
+/// Every application the Shell lists in its Apps folder, including packaged apps
+/// that have no Start menu shortcut file. Each path is a `shell:AppsFolder\<id>`
+/// moniker that the Shell can launch.
+#[cfg(windows)]
+pub fn shell_apps() -> Vec<App> {
+    use windows::Win32::{
+        System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx, CoTaskMemFree, CoUninitialize},
+        UI::Shell::{
+            BHID_EnumItems, FOLDERID_AppsFolder, IEnumShellItems, IShellItem, KNOWN_FOLDER_FLAG,
+            SHGetKnownFolderItem, SIGDN_NORMALDISPLAY, SIGDN_PARENTRELATIVEPARSING,
+        },
+    };
+    const LIMIT: usize = 4_000;
+    // S_OK and S_FALSE need a matching release; RPC_E_CHANGED_MODE does not.
+    let initialised = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) }.is_ok();
+    let name_of = |item: &IShellItem, form| unsafe {
+        let text = item.GetDisplayName(form).ok()?;
+        let value = text.to_string().ok();
+        CoTaskMemFree(Some(text.0 as *const _));
+        value
+    };
+    let mut apps = Vec::new();
+    let listed: windows::core::Result<()> = (|| unsafe {
+        let folder: IShellItem =
+            SHGetKnownFolderItem(&FOLDERID_AppsFolder, KNOWN_FOLDER_FLAG(0), None)?;
+        let items: IEnumShellItems = folder.BindToHandler(None, &BHID_EnumItems)?;
+        while apps.len() < LIMIT {
+            let mut batch = [None];
+            let mut fetched = 0;
+            if items.Next(&mut batch, Some(&mut fetched)).is_err() || fetched == 0 {
+                break;
+            }
+            let Some(item) = batch[0].take() else { break };
+            if let (Some(name), Some(id)) = (
+                name_of(&item, SIGDN_NORMALDISPLAY),
+                name_of(&item, SIGDN_PARENTRELATIVEPARSING),
+            ) {
+                apps.push(App {
+                    name,
+                    path: PathBuf::from(format!(r"shell:AppsFolder\{id}")),
+                });
+            }
+        }
+        Ok(())
+    })();
+    drop(listed);
+    if initialised {
+        unsafe { CoUninitialize() };
+    }
+    apps
+}
+
 fn rank(name: &str, query: &str) -> Option<u8> {
     if name.starts_with(query) {
         return Some(0);
@@ -166,5 +229,44 @@ mod tests {
         assert_eq!(apps.len(), 1);
         assert_eq!(apps[0].path, expected);
         Ok(())
+    }
+
+    #[test]
+    fn merges_only_names_not_already_catalogued() {
+        let app = |name: &str, path: &str| App {
+            name: name.into(),
+            path: path.into(),
+        };
+        let mut apps = vec![
+            app("Visual Studio Code", "code.lnk"),
+            app("Notepad", "notepad.lnk"),
+        ];
+        merge(
+            &mut apps,
+            vec![
+                app("notepad", r"shell:AppsFolder\Notepad!App"),
+                app(
+                    "Terminal",
+                    r"shell:AppsFolder\Microsoft.WindowsTerminal!App",
+                ),
+                app(" ", r"shell:AppsFolder\Blank"),
+            ],
+        );
+        let names: Vec<_> = apps.iter().map(|app| app.name.as_str()).collect();
+        assert_eq!(names, ["Notepad", "Terminal", "Visual Studio Code"]);
+        assert_eq!(apps[0].path, PathBuf::from("notepad.lnk"));
+    }
+
+    #[test]
+    #[cfg(windows)]
+    #[ignore = "reads the interactive user's Apps folder"]
+    fn lists_packaged_applications() {
+        let apps = shell_apps();
+        assert!(
+            apps.iter()
+                .any(|app| app.path.to_string_lossy().contains('!')),
+            "no packaged application among {} entries",
+            apps.len()
+        );
     }
 }

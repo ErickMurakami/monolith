@@ -163,6 +163,9 @@ fn bitmap_info() -> BITMAPINFO {
 }
 
 fn extract(path: &Path) -> Option<Icon> {
+    if path.to_str().is_some_and(|text| text.starts_with("shell:")) {
+        return shell_item_icon(path);
+    }
     if path
         .extension()
         .is_some_and(|extension| extension.eq_ignore_ascii_case("lnk"))
@@ -249,6 +252,35 @@ fn expand(text: &str) -> String {
     }
     result.push_str(rest);
     result
+}
+
+/// The icon of a Shell moniker such as `shell:AppsFolder\<id>`, through its item ID list.
+fn shell_item_icon(path: &Path) -> Option<Icon> {
+    use windows_sys::Win32::UI::Shell::{ILFree, SHGFI_PIDL, SHParseDisplayName};
+    let wide: Vec<u16> = path.as_os_str().encode_wide().chain([0]).collect();
+    let mut pidl = null_mut();
+    let parsed = unsafe { SHParseDisplayName(wide.as_ptr(), null_mut(), &mut pidl, 0, null_mut()) };
+    if parsed < 0 || pidl.is_null() {
+        return None;
+    }
+    let mut info = SHFILEINFOW::default();
+    // With SHGFI_PIDL the first argument is the item ID list.
+    let found = unsafe {
+        SHGetFileInfoW(
+            pidl as *const u16,
+            0,
+            &mut info,
+            size_of::<SHFILEINFOW>() as u32,
+            SHGFI_ICON | SHGFI_PIDL,
+        )
+    };
+    unsafe { ILFree(pidl) };
+    if found == 0 || info.hIcon.is_null() {
+        return None;
+    }
+    let icon = unsafe { rasterise(info.hIcon) };
+    unsafe { DestroyIcon(info.hIcon) };
+    icon
 }
 
 fn file_icon(path: &Path) -> Option<Icon> {

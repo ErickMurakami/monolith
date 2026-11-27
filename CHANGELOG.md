@@ -47,6 +47,7 @@
 - Dock pin icons no longer show the shortcut-arrow overlay.
 - Spotlight results show Shell icons, a kind label and the Enter action on a tinted selection.
 - Spotlight has a framed search field with a search glyph, focus outline and shortcut chip, plus keyboard guidance.
+- Spotlight finds packaged applications such as Windows Terminal.
 - Control Center adjusts internal display brightness directly.
 - Control Center shows Wi-Fi and Bluetooth state and switches the radios directly.
 - Notification text can be withheld from banners and history.
