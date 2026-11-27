@@ -171,16 +171,192 @@ pub fn open_in_new(target: std::path::PathBuf) -> io::Result<()> {
                 .and_then(|workspaces| workspaces.current.map(|index| workspaces.ids[index]));
             // The user may still hold Ctrl from Ctrl+Enter; the chord needs clean modifiers.
             let released = wait_until(2_000, || !any_modifier_held());
-            if released && press(&[VK_LWIN, VK_LCONTROL, VK_D], 1) {
-                wait_until(1_500, || {
-                    read().ok().is_some_and(|workspaces| {
-                        workspaces.current.map(|index| workspaces.ids[index]) != before
-                    })
-                });
-            }
+            let current = || {
+                read()
+                    .ok()
+                    .and_then(|workspaces| workspaces.current.map(|index| workspaces.ids[index]))
+            };
+            let created = (released && press(&[VK_LWIN, VK_LCONTROL, VK_D], 1))
+                .then(|| {
+                    wait_until(1_500, || current().is_some_and(|id| Some(id) != before));
+                    current().filter(|id| Some(*id) != before)
+                })
+                .flatten();
             launch(&target);
+            // Track the desktop only once its application has shown a window there,
+            // so a slow launch cannot make it look empty.
+            if let Some(created) = created
+                && wait_until(10_000, || {
+                    current() == Some(created)
+                        && crate::desktop::snapshot()
+                            .is_ok_and(|snapshot| !snapshot.windows.is_empty())
+                })
+            {
+                track(before, created);
+            }
         })
         .map(drop)
+}
+
+/// A desktop Monolith created for an application, and the desktop it came from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Dedicated {
+    origin: Option<DesktopId>,
+    created: DesktopId,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum Step {
+    Keep,
+    /// The user closed or replaced the desktop; stop tracking it.
+    Forget,
+    /// The desktop is current and empty: close it and return to `origin`.
+    Return {
+        origin: Option<DesktopId>,
+    },
+}
+
+static DEDICATED: std::sync::Mutex<Vec<Dedicated>> = std::sync::Mutex::new(Vec::new());
+static WATCHING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn decide(entry: Dedicated, workspaces: &Workspaces, has_windows: bool) -> Step {
+    let Some(created) = workspaces.ids.iter().position(|id| *id == entry.created) else {
+        return Step::Forget;
+    };
+    if workspaces.current != Some(created) || has_windows {
+        return Step::Keep;
+    }
+    Step::Return {
+        origin: entry
+            .origin
+            .filter(|origin| workspaces.ids.contains(origin)),
+    }
+}
+
+/// Track `created` once its application has shown a window there.
+fn track(origin: Option<DesktopId>, created: DesktopId) {
+    if let Ok(mut entries) = DEDICATED.lock() {
+        entries.push(Dedicated { origin, created });
+    }
+    start_watcher();
+}
+
+thread_local! {
+    static WATCH_THREAD: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+const CHECK: u32 = windows_sys::Win32::UI::WindowsAndMessaging::WM_APP + 1;
+
+unsafe extern "system" fn window_destroyed(
+    _: windows_sys::Win32::UI::Accessibility::HWINEVENTHOOK,
+    _: u32,
+    _: windows_sys::Win32::Foundation::HWND,
+    object: i32,
+    child: i32,
+    _: u32,
+    _: u32,
+) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{OBJID_WINDOW, PostThreadMessageW};
+    if object == OBJID_WINDOW && child == 0 {
+        unsafe { PostThreadMessageW(WATCH_THREAD.get(), CHECK, 0, 0) };
+    }
+}
+
+/// Runs only while dedicated desktops are tracked. Window destruction schedules a
+/// check after a short delay so closing applications can finish tearing down.
+fn watch() {
+    use windows_sys::Win32::{
+        System::Threading::GetCurrentThreadId,
+        UI::{
+            Accessibility::{SetWinEventHook, UnhookWinEvent},
+            WindowsAndMessaging::{
+                EVENT_OBJECT_DESTROY, GetMessageW, KillTimer, MSG, SetTimer, WINEVENT_OUTOFCONTEXT,
+                WINEVENT_SKIPOWNPROCESS, WM_TIMER,
+            },
+        },
+    };
+    WATCH_THREAD.set(unsafe { GetCurrentThreadId() });
+    let hook = unsafe {
+        SetWinEventHook(
+            EVENT_OBJECT_DESTROY,
+            EVENT_OBJECT_DESTROY,
+            null_mut(),
+            Some(window_destroyed),
+            0,
+            0,
+            WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS,
+        )
+    };
+    let mut timer = 0;
+    let mut msg = MSG::default();
+    while !hook.is_null() && unsafe { GetMessageW(&mut msg, null_mut(), 0, 0) } > 0 {
+        match msg.message {
+            CHECK if timer == 0 => timer = unsafe { SetTimer(null_mut(), 0, 400, None) },
+            WM_TIMER if msg.wParam == timer && timer != 0 => {
+                unsafe { KillTimer(null_mut(), timer) };
+                timer = 0;
+                if !check() {
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    if !hook.is_null() {
+        unsafe { UnhookWinEvent(hook) };
+    }
+    WATCHING.store(false, std::sync::atomic::Ordering::Release);
+    // An entry added while stopping still needs a watcher.
+    if DEDICATED.lock().is_ok_and(|entries| !entries.is_empty()) {
+        start_watcher();
+    }
+}
+
+fn start_watcher() {
+    if !WATCHING.swap(true, std::sync::atomic::Ordering::AcqRel)
+        && std::thread::Builder::new()
+            .name("monolith-dedicated-workspaces".into())
+            .spawn(watch)
+            .is_err()
+    {
+        WATCHING.store(false, std::sync::atomic::Ordering::Release);
+    }
+}
+
+/// Apply the policy to every tracked desktop. False once nothing is tracked.
+fn check() -> bool {
+    let Ok(workspaces) = read() else {
+        return true;
+    };
+    let has_windows = crate::desktop::snapshot().is_ok_and(|snapshot| !snapshot.windows.is_empty());
+    let Ok(mut entries) = DEDICATED.lock() else {
+        return false;
+    };
+    let mut returning = None;
+    entries.retain(|entry| match decide(*entry, &workspaces, has_windows) {
+        Step::Keep => true,
+        Step::Forget => false,
+        Step::Return { origin } => {
+            returning = Some((entry.created, origin));
+            false
+        }
+    });
+    let remaining = !entries.is_empty();
+    drop(entries);
+    if let Some((created, origin)) = returning {
+        // Close the empty desktop Monolith created, then return to where it started.
+        if press(&[VK_LWIN, VK_LCONTROL, VK_F4], 1) {
+            wait_until(1_500, || {
+                read().is_ok_and(|workspaces| !workspaces.ids.contains(&created))
+            });
+        }
+        if let Some(index) =
+            origin.and_then(|origin| read().ok()?.ids.iter().position(|id| *id == origin))
+        {
+            switch_to(index);
+        }
+    }
+    remaining
 }
 
 fn any_modifier_held() -> bool {
@@ -315,6 +491,39 @@ mod tests {
             current: Some(0),
         };
         assert_eq!(single.summary(false), None);
+    }
+
+    #[test]
+    fn returns_only_from_an_empty_current_dedicated_desktop() {
+        let entry = Dedicated {
+            origin: Some([1; 16]),
+            created: [3; 16],
+        };
+        let at = |current| Workspaces {
+            ids: vec![[1; 16], [2; 16], [3; 16]],
+            current: Some(current),
+        };
+        assert_eq!(
+            decide(entry, &at(2), false),
+            Step::Return {
+                origin: Some([1; 16])
+            }
+        );
+        // Still in use, or the user is elsewhere: leave it alone.
+        assert_eq!(decide(entry, &at(2), true), Step::Keep);
+        assert_eq!(decide(entry, &at(0), false), Step::Keep);
+        // The user closed the dedicated desktop.
+        let closed = Workspaces {
+            ids: vec![[1; 16], [2; 16]],
+            current: Some(0),
+        };
+        assert_eq!(decide(entry, &closed, false), Step::Forget);
+        // The origin was closed meanwhile: close the empty desktop without a target.
+        let orphan = Workspaces {
+            ids: vec![[2; 16], [3; 16]],
+            current: Some(1),
+        };
+        assert_eq!(decide(entry, &orphan, false), Step::Return { origin: None });
     }
 
     #[test]
