@@ -98,7 +98,24 @@ public static class DesktopSmoke {
             Keyboard = new KeyboardInput { Key = key, Flags = flags },
         } };
     }
+    // Synthetic keys go to the foreground window. Refuse unless it belongs to this
+    // test, Monolith or the Shell, so a failed focus change can never type into
+    // the user's other applications.
+    public static bool ForegroundIsSafe() {
+        IntPtr foreground = GetForegroundWindow();
+        if (foreground == IntPtr.Zero) return true;
+        uint owner;
+        GetWindowThreadProcessId(foreground, out owner);
+        if (owner == (uint)System.Diagnostics.Process.GetCurrentProcess().Id) return true;
+        try {
+            string name = System.Diagnostics.Process.GetProcessById((int)owner).ProcessName.ToLowerInvariant();
+            return name == "monolith" || name == "explorer";
+        } catch (ArgumentException) {
+            return false;
+        }
+    }
     public static bool PressChord(ushort[] modifiers, ushort key, bool repeated) {
+        if (!ForegroundIsSafe()) return false;
         var events = new System.Collections.Generic.List<Input>();
         var release = new System.Collections.Generic.List<Input>();
         foreach (ushort modifier in modifiers) events.Add(Key(modifier, 0));

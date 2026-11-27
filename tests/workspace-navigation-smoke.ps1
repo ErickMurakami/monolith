@@ -172,8 +172,8 @@ try {
             if (!$heading.ToString().Contains("$position of $($ids.Count)")) { throw "Mission Control did not name the current desktop: $heading" }
             if (![DesktopSmoke]::PressChord([uint16[]]@(0x5B), 0x09, $false)) { throw 'Could not send the second Win+Tab.' }
             Wait-Until { (Find-Mission $script:launcher) -eq [IntPtr]::Zero } 'A second Win+Tab did not close Mission Control.'
-            $spotlight = [DesktopSmoke]::FindClass('MonolithSpotlight')
-            [void][DesktopSmoke]::Post($spotlight, 0x10, [UIntPtr]::Zero, [IntPtr]::Zero)
+            $launcherWindow = [DesktopSmoke]::FindClass('MonolithSpotlight')
+            [void][DesktopSmoke]::Post($launcherWindow, 0x10, [UIntPtr]::Zero, [IntPtr]::Zero)
             Wait-Until { $script:launcher.HasExited } 'The resident process did not exit.'
             'Win+1 to Win+9 selected verified native desktops by position, and Win+Tab toggled Mission Control.'
         } finally {
