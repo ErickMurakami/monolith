@@ -491,15 +491,6 @@ unsafe fn present(hwnd: HWND, state: *mut State) {
     }
 }
 
-/// Opacity after `elapsed` milliseconds of a linear fade, and whether it finished.
-fn fade_alpha(fading_in: bool, elapsed: u64) -> (u8, bool) {
-    let progress = (elapsed.min(FADE_MS) * 255 / FADE_MS) as u8;
-    (
-        if fading_in { progress } else { 255 - progress },
-        elapsed >= FADE_MS,
-    )
-}
-
 unsafe fn start_fade(hwnd: HWND, state: *mut State, fading_in: bool) {
     unsafe {
         if !overlay::animations_enabled() {
@@ -520,7 +511,8 @@ unsafe fn step_fade(hwnd: HWND, state: *mut State) {
             KillTimer(hwnd, FADE);
             return;
         };
-        let (alpha, finished) = fade_alpha(fading_in, GetTickCount64().saturating_sub(started));
+        let (alpha, finished) =
+            overlay::fade_alpha(fading_in, GetTickCount64().saturating_sub(started), FADE_MS);
         if finished {
             finish_fade(hwnd, state, fading_in);
         } else {
@@ -1117,10 +1109,10 @@ mod tests {
 
     #[test]
     fn fades_linearly_in_and_out() {
-        assert_eq!(fade_alpha(true, 0), (0, false));
-        assert_eq!(fade_alpha(true, FADE_MS / 2).0, 127);
-        assert_eq!(fade_alpha(true, FADE_MS), (255, true));
-        assert_eq!(fade_alpha(false, 0), (255, false));
-        assert_eq!(fade_alpha(false, FADE_MS * 3), (0, true));
+        assert_eq!(overlay::fade_alpha(true, 0, FADE_MS), (0, false));
+        assert_eq!(overlay::fade_alpha(true, FADE_MS / 2, FADE_MS).0, 127);
+        assert_eq!(overlay::fade_alpha(true, FADE_MS, FADE_MS), (255, true));
+        assert_eq!(overlay::fade_alpha(false, 0, FADE_MS), (255, false));
+        assert_eq!(overlay::fade_alpha(false, FADE_MS * 3, FADE_MS), (0, true));
     }
 }

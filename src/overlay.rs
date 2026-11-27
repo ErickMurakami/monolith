@@ -160,6 +160,16 @@ pub fn animations_enabled() -> bool {
     }
 }
 
+/// Opacity after `elapsed` of a linear `duration` fade, and whether it finished.
+pub fn fade_alpha(fading_in: bool, elapsed: u64, duration: u64) -> (u8, bool) {
+    let duration = duration.max(1);
+    let progress = (elapsed.min(duration) * 255 / duration) as u8;
+    (
+        if fading_in { progress } else { 255 - progress },
+        elapsed >= duration,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

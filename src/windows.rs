@@ -34,6 +34,12 @@ const EDIT: usize = 100;
 const RESULTS: usize = 101;
 const RESULT_LIMIT: usize = 60;
 const DISMISS_INACTIVE: u32 = WM_APP + 2;
+const SPOTLIGHT_FADE: usize = 0x51;
+const SPOTLIGHT_FADE_MS: u64 = 120;
+
+thread_local! {
+    static FADE_STARTED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
 
 enum Match {
     App(usize),
@@ -232,7 +238,7 @@ pub fn run() -> io::Result<()> {
             previous_foreground: null_mut(),
         });
         let hwnd = CreateWindowExW(
-            overlay::EX_STYLE | WS_EX_TOPMOST,
+            overlay::EX_STYLE | WS_EX_TOPMOST | WS_EX_LAYERED,
             class_name.as_ptr(),
             wide("Monolith").as_ptr(),
             overlay::STYLE | WS_CLIPCHILDREN,
@@ -248,6 +254,8 @@ pub fn run() -> io::Result<()> {
         if hwnd.is_null() {
             return Err(io::Error::last_os_error());
         }
+        // A layered window stays invisible until it has an opacity.
+        SetLayeredWindowAttributes(hwnd, 0, 255, LWA_ALPHA);
         // The callback takes exclusive state access only where it does not
         // dispatch messages that can re-enter a state-reading branch.
         let state_ptr = Box::into_raw(state);
@@ -687,6 +695,11 @@ unsafe fn show(hwnd: HWND, state: *mut State, dock: Option<&Dock>) {
                 layout(hwnd, state);
             }
         }
+        if opening && overlay::animations_enabled() {
+            // Fade in; keyboard focus is immediate because opacity does not affect input.
+            SetLayeredWindowAttributes(hwnd, 0, 0, LWA_ALPHA);
+            SetTimer(hwnd, SPOTLIGHT_FADE, 15, None);
+        }
         ShowWindow(hwnd, SW_SHOW);
         SetForegroundWindow(hwnd);
         SetFocus((*state).edit);
@@ -697,6 +710,9 @@ unsafe fn show(hwnd: HWND, state: *mut State, dock: Option<&Dock>) {
         if opening {
             refresh(state);
             fit_results(hwnd, state);
+            // Start the fade clock after the synchronous first-open work, so the
+            // transition is visible rather than skipped.
+            FADE_STARTED.set(windows_sys::Win32::System::SystemInformation::GetTickCount64());
         }
     }
 }
@@ -1038,6 +1054,16 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
             _ if state.is_null() => DefWindowProcW(hwnd, msg, wp, lp),
             WM_ACTIVATE if wp & 0xffff == WA_INACTIVE as usize => {
                 PostMessageW(hwnd, DISMISS_INACTIVE, 0, 0);
+                0
+            }
+            WM_TIMER if wp == SPOTLIGHT_FADE => {
+                let elapsed = windows_sys::Win32::System::SystemInformation::GetTickCount64()
+                    .saturating_sub(FADE_STARTED.get());
+                let (alpha, finished) = overlay::fade_alpha(true, elapsed, SPOTLIGHT_FADE_MS);
+                SetLayeredWindowAttributes(hwnd, 0, alpha, LWA_ALPHA);
+                if finished {
+                    KillTimer(hwnd, SPOTLIGHT_FADE);
+                }
                 0
             }
             DISMISS_INACTIVE => {

@@ -4,7 +4,7 @@
 
 Foundation and the first native application are implemented. Desktop Experience work has delivered the experimental Spotlight application launcher, calculator, window switcher and opt-in Dock.
 
-- `src/windows.rs` owns the borderless Spotlight window lifecycle, keyboard navigation, focus dismissal and shortcut registration.
+- `src/windows.rs` owns the borderless Spotlight window lifecycle, keyboard navigation, focus dismissal and shortcut registration. Spotlight fades in over 120 ms on opening, after the first-open work, with the edit field focused at once. A launch-timeline check saw opacity rise 99, 231, 255.
 - `src/overlay.rs` shares the native overlay styles, palette and DPI scaling between Spotlight and Dock.
 - `src/hotkey.rs` owns `RegisterHotKey` registration and switches to Ctrl+Alt+Space when Windows reserves Win+Space.
 - `src/search.rs` discovers Start menu desktop shortcuts and ranks local matches.
