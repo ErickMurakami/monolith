@@ -26,7 +26,9 @@ use windows_sys::Win32::{
     Foundation::{HANDLE, HWND, LPARAM, LRESULT, WPARAM},
     System::{LibraryLoader::GetModuleHandleW, Threading::GetCurrentThreadId},
     UI::{
-        Input::KeyboardAndMouse::{VK_F24, VK_LCONTROL, VK_LEFT, VK_LMENU, VK_LWIN, VK_RIGHT},
+        Input::KeyboardAndMouse::{
+            VK_D, VK_F24, VK_LCONTROL, VK_LEFT, VK_LMENU, VK_LWIN, VK_RIGHT,
+        },
         Input::{
             GetRawInputData, GetRawInputDeviceInfoW, HRAWINPUT, RAWINPUT, RAWINPUTDEVICE,
             RAWINPUTHEADER, RID_INPUT, RIDEV_INPUTSINK, RIDI_PREPARSEDDATA, RIM_TYPEHID,
@@ -411,7 +413,10 @@ unsafe fn handle_input(input: HRAWINPUT) {
                 Swipe::Up => {
                     crate::workspaces::press(&[VK_LCONTROL, VK_LMENU, VK_F24], 1);
                 }
-                Swipe::Down => {}
+                // As in Windows: show the desktop by minimising windows (Win+D toggles).
+                Swipe::Down => {
+                    crate::workspaces::press(&[VK_LWIN, VK_D], 1);
+                }
             }
         }
     }
