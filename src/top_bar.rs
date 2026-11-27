@@ -11,7 +11,7 @@ use windows_sys::Win32::{
     Graphics::Gdi::*,
     System::{
         Power::{GetSystemPowerStatus, SYSTEM_POWER_STATUS},
-        SystemInformation::GetLocalTime,
+        SystemInformation::{GetLocalTime, GetTickCount64},
         SystemServices::{SS_CENTERIMAGE, SS_RIGHT},
     },
     UI::{
@@ -26,6 +26,8 @@ use windows_sys::Win32::{
 const CLOCK: usize = 1;
 const LAYOUT: usize = 2;
 const REVEAL: usize = 3;
+const FADE: usize = 4;
+const FADE_MS: u64 = 120;
 const APPBAR_NOTIFICATION: u32 = WM_APP + 20;
 /// Posted by the notification surface with the unread count in `wParam`.
 pub const UNREAD: u32 = WM_APP + 32;
@@ -71,6 +73,8 @@ struct State {
     covered: bool,
     /// The pointer revealed the bar over that window.
     revealed: bool,
+    /// A reveal or collapse fade in progress: fading in, and when it started.
+    fade: Option<(bool, u64)>,
 }
 
 /// The bar is collapsed to its edge strip; hosted surfaces such as the Island hide too.
@@ -141,6 +145,7 @@ impl TopBar {
                     recovery_attempts: 0,
                     covered: false,
                     revealed: false,
+                    fade: None,
                 }),
             };
             if bar.state.brush.is_null() {
@@ -391,7 +396,12 @@ unsafe fn place(hwnd: HWND, state: *mut State) {
             (*state).revealed = false;
         }
         let collapsed = covered && !(*state).revealed;
-        COLLAPSED.set(collapsed);
+        // Hosted surfaces hide as soon as the bar starts collapsing, and appear only
+        // once it is fully revealed.
+        if collapsed {
+            COLLAPSED.set(true);
+        }
+        let animate = overlay::animations_enabled() && IsWindowVisible(hwnd) != 0;
         if (*state).dpi != dpi {
             let font = CreateFontW(
                 -scale(13),
@@ -440,7 +450,9 @@ unsafe fn place(hwnd: HWND, state: *mut State) {
         let width = (bounds.right - bounds.left).max(1);
         let height = (bounds.bottom - bounds.top).max(1);
         // Keep the reservation beyond the visible strip for maximised custom frames.
-        let visible_height = if collapsed { scale(3) } else { strip_height };
+        // Keep the full strip while fading out; shrink to the edge once collapsed.
+        let shrink = collapsed && (COLLAPSED_SHOWN.get() || !animate);
+        let visible_height = if shrink { scale(3) } else { strip_height };
         if (*state).region_size != Some((width, visible_height)) {
             let region = CreateRectRgn(0, 0, width, visible_height);
             if region.is_null() || SetWindowRgn(hwnd, region, 1) == 0 {
@@ -492,15 +504,36 @@ unsafe fn place(hwnd: HWND, state: *mut State) {
             hide(hwnd);
             return;
         }
-        SetLayeredWindowAttributes(hwnd, 0, if collapsed { 1 } else { 255 }, LWA_ALPHA);
         if !was_visible {
             refresh_status(hwnd, state);
         }
         if needs_position {
             island::host_changed(hwnd);
         }
-        if collapsed != COLLAPSED_SHOWN.replace(collapsed) {
-            island::host_changed(hwnd);
+        if collapsed != COLLAPSED_SHOWN.get() && animate {
+            if (*state)
+                .fade
+                .is_none_or(|(fading_in, _)| fading_in == collapsed)
+            {
+                if !collapsed {
+                    // Paint every part while invisible so the whole bar fades in together.
+                    SetLayeredWindowAttributes(hwnd, 0, 1, LWA_ALPHA);
+                    RedrawWindow(
+                        hwnd,
+                        std::ptr::null(),
+                        null_mut(),
+                        RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN,
+                    );
+                }
+                (*state).fade = Some((!collapsed, GetTickCount64()));
+                SetTimer(hwnd, FADE, 15, None);
+            }
+        } else if (*state).fade.is_none() {
+            SetLayeredWindowAttributes(hwnd, 0, if collapsed { 1 } else { 255 }, LWA_ALPHA);
+            COLLAPSED.set(collapsed);
+            if collapsed != COLLAPSED_SHOWN.replace(collapsed) {
+                island::host_changed(hwnd);
+            }
         }
     }
 }
@@ -696,6 +729,27 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                 (*state).revealed = true;
                 place(hwnd, state);
                 SetTimer(hwnd, REVEAL, 400, None);
+                0
+            }
+            WM_TIMER if wp == FADE => {
+                let Some((fading_in, started)) = (*state).fade else {
+                    KillTimer(hwnd, FADE);
+                    return 0;
+                };
+                let elapsed = GetTickCount64().saturating_sub(started);
+                let (alpha, finished) = overlay::fade_alpha(fading_in, elapsed, FADE_MS);
+                SetLayeredWindowAttributes(hwnd, 0, alpha.max(1), LWA_ALPHA);
+                if finished {
+                    KillTimer(hwnd, FADE);
+                    (*state).fade = None;
+                    COLLAPSED_SHOWN.set(!fading_in);
+                    COLLAPSED.set(!fading_in);
+                    island::host_changed(hwnd);
+                    if !fading_in {
+                        // Shrink to the edge strip now that the bar is invisible.
+                        place(hwnd, state);
+                    }
+                }
                 0
             }
             WM_TIMER if wp == REVEAL => {
