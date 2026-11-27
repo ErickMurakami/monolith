@@ -163,6 +163,95 @@ fn bitmap_info() -> BITMAPINFO {
 }
 
 fn extract(path: &Path) -> Option<Icon> {
+    if path
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("lnk"))
+        && let Some(icon) = link_icon(path)
+    {
+        return Some(icon);
+    }
+    file_icon(path)
+}
+
+/// A shortcut's own icon without the Shell's shortcut-arrow overlay: the icon
+/// location stored in the link, or else the icon of its target.
+fn link_icon(path: &Path) -> Option<Icon> {
+    use windows::{
+        Win32::{
+            System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance, IPersistFile, STGM_READ},
+            UI::Shell::{IShellLinkW, ShellLink},
+        },
+        core::{Interface, PCWSTR},
+    };
+    use windows_sys::Win32::UI::Shell::ExtractIconExW;
+    let wide: Vec<u16> = path.as_os_str().encode_wide().chain([0]).collect();
+    let link: IShellLinkW =
+        unsafe { CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER) }.ok()?;
+    unsafe {
+        link.cast::<IPersistFile>()
+            .ok()?
+            .Load(PCWSTR(wide.as_ptr()), STGM_READ)
+    }
+    .ok()?;
+    let mut location = [0_u16; 1024];
+    let mut index = 0;
+    unsafe { link.GetIconLocation(&mut location, &mut index) }.ok()?;
+    let location = expand(&from_wide(&location));
+    if !location.is_empty() {
+        let file: Vec<u16> = location.encode_utf16().chain([0]).collect();
+        let mut large = null_mut();
+        let extracted = unsafe { ExtractIconExW(file.as_ptr(), index, &mut large, null_mut(), 1) };
+        if extracted > 0 && !large.is_null() {
+            let icon = unsafe { rasterise(large) };
+            unsafe { DestroyIcon(large) };
+            return icon;
+        }
+    }
+    let mut target = [0_u16; 1024];
+    unsafe { link.GetPath(&mut target, null_mut(), 0) }.ok()?;
+    let target = from_wide(&target);
+    (!target.is_empty()).then(|| file_icon(Path::new(&target)))?
+}
+
+fn from_wide(buffer: &[u16]) -> String {
+    let length = buffer
+        .iter()
+        .position(|&unit| unit == 0)
+        .unwrap_or(buffer.len());
+    String::from_utf16_lossy(&buffer[..length])
+}
+
+/// Expand `%NAME%` environment references, leaving unknown names untouched.
+fn expand(text: &str) -> String {
+    let mut result = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = rest.find('%') {
+        result.push_str(&rest[..start]);
+        let after = &rest[start + 1..];
+        match after.find('%') {
+            Some(end) => {
+                let name = &after[..end];
+                match std::env::var(name) {
+                    Ok(value) if !name.is_empty() => result.push_str(&value),
+                    _ => {
+                        result.push('%');
+                        result.push_str(name);
+                        result.push('%');
+                    }
+                }
+                rest = &after[end + 1..];
+            }
+            None => {
+                result.push_str(&rest[start..]);
+                rest = "";
+            }
+        }
+    }
+    result.push_str(rest);
+    result
+}
+
+fn file_icon(path: &Path) -> Option<Icon> {
     let path: Vec<u16> = path.as_os_str().encode_wide().chain([0]).collect();
     let mut info = SHFILEINFOW::default();
     // SHGFI_ICON gives the caller ownership of the icon handle.
@@ -261,5 +350,54 @@ mod tests {
         assert_eq!(channel(pixel, 0), channel(pixel, 8));
         assert_eq!(channel(pixel, 8), channel(pixel, 16));
         assert_eq!(composite(0xffff_0000, 0, true), 0x00ff0000);
+    }
+
+    #[test]
+    fn expands_known_environment_references_only() {
+        let root = std::env::var("SystemRoot").unwrap();
+        assert_eq!(
+            expand(r"%SystemRoot%\System32\shell32.dll"),
+            format!(r"{root}\System32\shell32.dll")
+        );
+        assert_eq!(
+            expand("%MONOLITH_UNSET_VARIABLE%"),
+            "%MONOLITH_UNSET_VARIABLE%"
+        );
+        assert_eq!(expand("100% sure"), "100% sure");
+        assert_eq!(expand(""), "");
+    }
+
+    #[test]
+    #[ignore = "creates a temporary shortcut through the interactive Shell"]
+    fn shortcut_icons_match_their_target_without_an_overlay() {
+        use windows::{
+            Win32::{
+                System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance, IPersistFile},
+                UI::Shell::{IShellLinkW, ShellLink},
+            },
+            core::{HSTRING, Interface},
+        };
+        unsafe { CoInitializeEx(std::ptr::null(), COINIT_APARTMENTTHREADED as u32) };
+        let target = std::path::PathBuf::from(std::env::var("SystemRoot").unwrap())
+            .join("System32")
+            .join("notepad.exe");
+        let link_path =
+            std::env::temp_dir().join(format!("monolith-icon-{}.lnk", std::process::id()));
+        unsafe {
+            let link: IShellLinkW =
+                CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER).unwrap();
+            link.SetPath(&HSTRING::from(target.as_os_str())).unwrap();
+            link.cast::<IPersistFile>()
+                .unwrap()
+                .Save(&HSTRING::from(link_path.as_os_str()), true)
+                .unwrap();
+        }
+        let from_link = link_icon(&link_path).expect("no shortcut icon");
+        let from_target = file_icon(&target).expect("no target icon");
+        let _ = std::fs::remove_file(&link_path);
+        assert!(
+            from_link.0[..] == from_target.0[..],
+            "the shortcut icon differs from its target"
+        );
     }
 }

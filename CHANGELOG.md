@@ -44,6 +44,7 @@
 - The Island animates expansion and collapse over 180 ms, honouring the Windows animation setting.
 - Notification banners fade in and out over 150 ms.
 - Spotlight fades in over 120 ms when it opens, with keyboard focus immediate.
+- Dock pin icons no longer show the shortcut-arrow overlay.
 - Control Center adjusts internal display brightness directly.
 - Control Center shows Wi-Fi and Bluetooth state and switches the radios directly.
 - Notification text can be withheld from banners and history.
