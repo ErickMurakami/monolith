@@ -186,6 +186,35 @@ pub(crate) unsafe fn shell_menu(hwnd: HWND, launcher: HWND, portuguese: bool) {
 
 /// Start menu shortcuts, plus Apps folder entries such as packaged apps that have
 /// no shortcut file.
+static PREPARED: std::sync::Mutex<Option<std::sync::mpsc::Receiver<Vec<App>>>> =
+    std::sync::Mutex::new(None);
+
+fn start_catalogue() {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let spawned = std::thread::Builder::new()
+        .name("monolith-catalogue".into())
+        .spawn(move || {
+            let _ = sender.send(catalogue());
+        });
+    if spawned.is_ok()
+        && let Ok(mut prepared) = PREPARED.lock()
+    {
+        *prepared = Some(receiver);
+    }
+}
+
+/// The prepared catalogue, waiting for the worker if it is still scanning; built
+/// here only if no worker could start or it failed.
+fn take_catalogue() -> Vec<App> {
+    let prepared = PREPARED
+        .lock()
+        .ok()
+        .and_then(|mut prepared| prepared.take());
+    prepared
+        .and_then(|receiver| receiver.recv().ok())
+        .unwrap_or_else(catalogue)
+}
+
 fn catalogue() -> Vec<App> {
     let mut apps = search::discover(roots());
     search::merge(&mut apps, search::shell_apps());
@@ -293,6 +322,8 @@ pub fn run() -> io::Result<()> {
             !safe && (settings.dock || replace_taskbar || args.iter().any(|arg| arg == "--dock"));
         let show_top_bar = !safe && (settings.top_bar || args.iter().any(|arg| arg == "--top-bar"));
         let show_island = !safe && (settings.island || args.iter().any(|arg| arg == "--island"));
+        // Build the application catalogue off the GUI thread before Spotlight first opens.
+        start_catalogue();
         let hotkey = Hotkey::bind(
             hwnd,
             settings.shortcut,
@@ -302,7 +333,7 @@ pub fn run() -> io::Result<()> {
         (*state_ptr).chord = hotkey.chord();
         let order_path = config_path.with_file_name("dock-order.toml");
         let pins = if show_dock && !settings.dock_pins.is_empty() {
-            let apps = (*state_ptr).apps.get_or_insert_with(catalogue);
+            let apps = (*state_ptr).apps.get_or_insert_with(take_catalogue);
             let mut pins = search::resolve_pins(apps, &settings.dock_pins);
             search::apply_pin_order(&mut pins, &config::load_dock_order(&order_path));
             pins
@@ -735,7 +766,7 @@ unsafe fn show(hwnd: HWND, state: *mut State, dock: Option<&Dock>) {
         SetFocus((*state).edit);
         SendMessageW((*state).edit, EM_SETSEL, 0, -1);
         if (*state).apps.is_none() {
-            (*state).apps = Some(catalogue());
+            (*state).apps = Some(take_catalogue());
         }
         if opening {
             refresh(state);
