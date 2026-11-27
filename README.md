@@ -101,6 +101,14 @@ See [project status](MONOLITH_STATUS.md) and [benchmark procedure](benchmarks/RE
 
 ![Monolith Files showing a verification folder and the standard folder shortcuts](docs/files.png)
 
+## Project Status — On Hold
+
+Monolith is currently on hold while I focus on other engineering projects.
+
+The repository remains public as an experimental exploration of native Windows customisation, desktop integration and Rust-based system tooling.
+
+Development may resume in the future. However, there is currently no active release schedule or commitment to ongoing maintenance.
+
 ![Quick Look rendering a local PNG in the native preview window](docs/quick-look.png)
 
 ![Files showing the branch and item states for a verification repository](docs/files-git.png)
