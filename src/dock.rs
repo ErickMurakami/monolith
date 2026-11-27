@@ -750,8 +750,9 @@ unsafe fn refresh(hwnd: HWND, state: *mut State) {
             (*state).pin_groups.clear();
             (*state).inventory = None;
             let work = display.rcWork;
-            let width = scale(120).min((work.right - work.left).max(1));
-            let height = scale(3);
+            // A full-width edge strip is easy to reach; it is invisible over fullscreen.
+            let width = (work.right - work.left).max(1);
+            let height = scale(5);
             let placed = SetWindowPos(
                 hwnd,
                 HWND_TOPMOST,

@@ -19,13 +19,14 @@ use windows_sys::Win32::{
     Graphics::Gdi::*,
     System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx, CoUninitialize},
     UI::{
-        Shell::{SHFILEINFOW, SHGFI_ICON, SHGetFileInfoW},
+        Shell::{SHFILEINFOW, SHGFI_ICON, SHGFI_SYSICONINDEX, SHGetFileInfoW},
         WindowsAndMessaging::{DI_NORMAL, DestroyIcon, DrawIconEx, PostMessageW, WM_APP},
     },
 };
 
 pub const READY: u32 = WM_APP + 4;
-const SIDE: i32 = 32;
+// Icons come from the 48 px extra-large system list and are drawn with HALFTONE.
+const SIDE: i32 = 48;
 const PIXELS: usize = (SIDE * SIDE) as usize;
 const LIMIT: usize = 32;
 
@@ -122,7 +123,10 @@ impl Cache {
             *output = composite(pixel, fill, original);
         }
         unsafe {
-            StretchDIBits(
+            // HALFTONE averages source pixels when scaling, instead of dropping them.
+            let previous_mode = SetStretchBltMode(dc, HALFTONE);
+            SetBrushOrgEx(dc, 0, 0, std::ptr::null_mut());
+            let drawn = StretchDIBits(
                 dc,
                 target.left + (target.right - target.left - size) / 2,
                 target.top + (target.bottom - target.top - size) / 2,
@@ -136,7 +140,9 @@ impl Cache {
                 &bitmap_info(),
                 DIB_RGB_COLORS,
                 SRCCOPY,
-            ) > 0
+            ) > 0;
+            SetStretchBltMode(dc, previous_mode);
+            drawn
         }
     }
 }
@@ -186,7 +192,7 @@ fn link_icon(path: &Path) -> Option<Icon> {
         },
         core::{Interface, PCWSTR},
     };
-    use windows_sys::Win32::UI::Shell::ExtractIconExW;
+    use windows_sys::Win32::UI::Shell::SHDefExtractIconW;
     let wide: Vec<u16> = path.as_os_str().encode_wide().chain([0]).collect();
     let link: IShellLinkW =
         unsafe { CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER) }.ok()?;
@@ -203,7 +209,10 @@ fn link_icon(path: &Path) -> Option<Icon> {
     if !location.is_empty() {
         let file: Vec<u16> = location.encode_utf16().chain([0]).collect();
         let mut large = null_mut();
-        let extracted = unsafe { ExtractIconExW(file.as_ptr(), index, &mut large, null_mut(), 1) };
+        // Ask for the 48 px size explicitly (low word: large size).
+        let extracted =
+            unsafe { SHDefExtractIconW(file.as_ptr(), index, 0, &mut large, null_mut(), 48) };
+        let extracted = if extracted >= 0 { 1 } else { 0 };
         if extracted > 0 && !large.is_null() {
             let icon = unsafe { rasterise(large) };
             unsafe { DestroyIcon(large) };
@@ -271,10 +280,13 @@ fn shell_item_icon(path: &Path) -> Option<Icon> {
             0,
             &mut info,
             size_of::<SHFILEINFOW>() as u32,
-            SHGFI_ICON | SHGFI_PIDL,
+            SHGFI_SYSICONINDEX | SHGFI_PIDL,
         )
     };
     unsafe { ILFree(pidl) };
+    if found != 0 {
+        return system_icon(info.iIcon);
+    }
     if found == 0 || info.hIcon.is_null() {
         return None;
     }
@@ -283,8 +295,41 @@ fn shell_item_icon(path: &Path) -> Option<Icon> {
     icon
 }
 
+/// A 48 px icon from the system extra-large image list.
+fn system_icon(index: i32) -> Option<Icon> {
+    use windows::Win32::UI::{
+        Controls::{IImageList, ILD_TRANSPARENT},
+        Shell::SHGetImageList,
+    };
+    const SHIL_EXTRALARGE: i32 = 2;
+    let list: IImageList = unsafe { SHGetImageList(SHIL_EXTRALARGE) }.ok()?;
+    let icon = unsafe { list.GetIcon(index, ILD_TRANSPARENT.0) }.ok()?;
+    if icon.is_invalid() {
+        return None;
+    }
+    let handle = icon.0 as windows_sys::Win32::UI::WindowsAndMessaging::HICON;
+    let rendered = unsafe { rasterise(handle) };
+    unsafe { DestroyIcon(handle) };
+    rendered
+}
+
 fn file_icon(path: &Path) -> Option<Icon> {
     let path: Vec<u16> = path.as_os_str().encode_wide().chain([0]).collect();
+    // Prefer the 48 px extra-large system icon; fall back to the 32 px large icon.
+    let mut indexed = SHFILEINFOW::default();
+    if unsafe {
+        SHGetFileInfoW(
+            path.as_ptr(),
+            0,
+            &mut indexed,
+            size_of::<SHFILEINFOW>() as u32,
+            SHGFI_SYSICONINDEX,
+        )
+    } != 0
+        && let Some(icon) = system_icon(indexed.iIcon)
+    {
+        return Some(icon);
+    }
     let mut info = SHFILEINFOW::default();
     // SHGFI_ICON gives the caller ownership of the icon handle.
     unsafe {
