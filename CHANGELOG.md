@@ -45,6 +45,7 @@
 - Notification banners fade in and out over 150 ms.
 - Spotlight fades in over 120 ms when it opens, with keyboard focus immediate.
 - Dock pin icons no longer show the shortcut-arrow overlay.
+- Spotlight results show Shell icons, a kind label and the Enter action on a tinted selection.
 - Control Center adjusts internal display brightness directly.
 - Control Center shows Wi-Fi and Bluetooth state and switches the radios directly.
 - Notification text can be withheld from banners and history.

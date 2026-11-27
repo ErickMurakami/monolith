@@ -6,6 +6,7 @@ use crate::{
     dock::{self, Dock},
     files,
     hotkey::{self, Hotkey, Notice},
+    icons,
     island::Island,
     mission::{self, Mission},
     notifications::{self, Notifications},
@@ -60,6 +61,10 @@ struct State {
     portuguese: bool,
     can_hide: bool,
     previous_foreground: HWND,
+    /// Shell icons for application rows, extracted off the GUI thread.
+    icons: Option<icons::Cache>,
+    small_font: HFONT,
+    glyph_font: HFONT,
 }
 
 struct SurfaceOptions {
@@ -77,6 +82,8 @@ impl Drop for State {
         // The window and its children have already been destroyed.
         unsafe {
             DeleteObject(self.font);
+            DeleteObject(self.small_font);
+            DeleteObject(self.glyph_font);
             DeleteObject(self.background);
             DeleteObject(self.surface);
         }
@@ -236,6 +243,9 @@ pub fn run() -> io::Result<()> {
             portuguese,
             can_hide: false,
             previous_foreground: null_mut(),
+            icons: None,
+            small_font: null_mut(),
+            glyph_font: null_mut(),
         });
         let hwnd = CreateWindowExW(
             overlay::EX_STYLE | WS_EX_TOPMOST | WS_EX_LAYERED,
@@ -347,7 +357,9 @@ unsafe fn run_window(
                 | WS_TABSTOP
                 | WS_VSCROLL
                 | LBS_NOTIFY as u32
-                | LBS_NOINTEGRALHEIGHT as u32,
+                | LBS_NOINTEGRALHEIGHT as u32
+                | LBS_OWNERDRAWFIXED as u32
+                | LBS_HASSTRINGS as u32,
             0,
             0,
             0,
@@ -361,6 +373,7 @@ unsafe fn run_window(
             return Err(io::Error::last_os_error());
         }
         (*state).edit = edit;
+        (*state).icons = icons::Cache::new(hwnd).ok();
         (*state).results = results;
         let cue = if (*state).portuguese {
             "Buscar aplicativos"
@@ -767,6 +780,15 @@ unsafe fn layout(hwnd: HWND, state: *mut State) {
                 (*state).font = font;
                 (*state).font_dpi = dpi;
             }
+            (*state).small_font =
+                replace_font((*state).small_font, scale(12), FW_NORMAL, "Segoe UI");
+            (*state).glyph_font = replace_font(
+                (*state).glyph_font,
+                scale(16),
+                FW_NORMAL,
+                "Segoe Fluent Icons",
+            );
+            SendMessageW(results, LB_SETITEMHEIGHT, 0, scale(44) as isize);
         }
         let mut area = RECT::default();
         GetClientRect(hwnd, &mut area);
@@ -868,6 +890,7 @@ unsafe fn refresh(state: *mut State) {
         }
         if !(*state).matches.is_empty() {
             SendMessageW(results, LB_SETCURSEL, 0, 0);
+            request_icons(state);
         }
         SendMessageW(results, WM_SETREDRAW, 1, 0);
         InvalidateRect(results, std::ptr::null(), 1);
@@ -880,6 +903,220 @@ unsafe fn refresh(state: *mut State) {
 
 unsafe fn add_row(results: HWND, label: &str) -> bool {
     unsafe { SendMessageW(results, LB_ADDSTRING, 0, wide(label).as_ptr() as isize) >= 0 }
+}
+
+/// Create a font and release the one it replaces; keeps the old one on failure.
+unsafe fn replace_font(old: HFONT, height: i32, weight: u32, face: &str) -> HFONT {
+    unsafe {
+        let font = CreateFontW(
+            -height,
+            0,
+            0,
+            0,
+            weight as i32,
+            0,
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            wide(face).as_ptr(),
+        );
+        if font.is_null() {
+            return old;
+        }
+        if !old.is_null() {
+            DeleteObject(old);
+        }
+        font
+    }
+}
+
+/// Ask the icon worker for the application rows that can be visible.
+unsafe fn request_icons(state: *mut State) {
+    unsafe {
+        let Some(apps) = (*state).apps.as_ref() else {
+            return;
+        };
+        let paths: Vec<PathBuf> = (*state)
+            .matches
+            .iter()
+            .take(12)
+            .filter_map(|found| match found {
+                Match::App(index) => apps.get(*index).map(|app| app.path.clone()),
+                Match::Window(_) => None,
+            })
+            .collect();
+        if let Some(cache) = (*state).icons.as_mut() {
+            cache.request(&paths);
+        }
+    }
+}
+
+/// Blend `accent` into `base` by `weight` out of 255.
+fn tint(base: u32, accent: u32, weight: u32) -> u32 {
+    let channel = |shift: u32| {
+        let (b, a) = ((base >> shift) & 0xff, (accent >> shift) & 0xff);
+        (b * (255 - weight) + a * weight) / 255
+    };
+    channel(0) | (channel(8) << 8) | (channel(16) << 16)
+}
+
+unsafe fn draw_text(hdc: HDC, font: HFONT, colour: u32, text: &str, mut bounds: RECT, flags: u32) {
+    unsafe {
+        let mut wide: Vec<u16> = text.encode_utf16().collect();
+        SelectObject(hdc, font);
+        SetTextColor(hdc, colour);
+        DrawTextW(
+            hdc,
+            wide.as_mut_ptr(),
+            wide.len() as i32,
+            &mut bounds,
+            flags | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX,
+        );
+    }
+}
+
+/// One result row: icon, name, kind and, when selected, the Enter action.
+unsafe fn draw_result(state: *mut State, item: &windows_sys::Win32::UI::Controls::DRAWITEMSTRUCT) {
+    unsafe {
+        if item.itemID == u32::MAX {
+            return;
+        }
+        let palette = (*state).palette;
+        let dpi = GetDpiForWindow(item.hwndItem);
+        let scale = |value| overlay::scale(value, dpi);
+        let selected = item.itemState & windows_sys::Win32::UI::Controls::ODS_SELECTED != 0;
+        let area = item.rcItem;
+        let background = if selected {
+            tint(palette.surface, palette.accent, 46)
+        } else {
+            palette.surface
+        };
+        let saved = SaveDC(item.hDC);
+        overlay::fill(item.hDC, &area, background);
+        SetBkMode(item.hDC, TRANSPARENT as i32);
+        let length = SendMessageW(item.hwndItem, LB_GETTEXTLEN, item.itemID as usize, 0);
+        let mut label = vec![0_u16; length.max(0) as usize + 1];
+        SendMessageW(
+            item.hwndItem,
+            LB_GETTEXT,
+            item.itemID as usize,
+            label.as_mut_ptr() as isize,
+        );
+        let label = String::from_utf16_lossy(&label[..length.max(0) as usize]);
+        let portuguese = (*state).portuguese;
+        let matches = &(*state).matches;
+        let found = matches.get(item.itemID as usize);
+        let (kind, action, glyph) = match found {
+            Some(Match::App(_)) => (
+                if portuguese {
+                    "Aplicativo"
+                } else {
+                    "Application"
+                },
+                if portuguese { "Abrir" } else { "Open" },
+                None,
+            ),
+            Some(Match::Window(_)) => (
+                if portuguese {
+                    "Janela aberta"
+                } else {
+                    "Open window"
+                },
+                if portuguese { "Alternar" } else { "Switch" },
+                // Segoe Fluent Icons: window.
+                Some("\u{E737}"),
+            ),
+            // Calculations and status lines carry no action.
+            None => ("", "", Some("\u{E8EF}")),
+        };
+        let icon_size = scale(24);
+        let icon = RECT {
+            left: area.left + scale(10),
+            top: area.top + (area.bottom - area.top - icon_size) / 2,
+            right: area.left + scale(10) + icon_size,
+            bottom: area.top + (area.bottom - area.top - icon_size) / 2 + icon_size,
+        };
+        let drawn = match found {
+            Some(Match::App(index)) => (*state)
+                .apps
+                .as_ref()
+                .and_then(|apps| apps.get(*index))
+                .zip((*state).icons.as_ref())
+                .is_some_and(|(app, cache)| {
+                    cache.draw(&app.path, item.hDC, icon, icon_size, background, false)
+                }),
+            _ => false,
+        };
+        if !drawn && let Some(glyph) = glyph {
+            draw_text(
+                item.hDC,
+                (*state).glyph_font,
+                palette.text,
+                glyph,
+                icon,
+                DT_CENTER,
+            );
+        }
+        let left = icon.right + scale(12);
+        let action_width = if selected && !action.is_empty() {
+            scale(96)
+        } else {
+            0
+        };
+        let right = area.right - scale(12) - action_width;
+        let secondary = tint(palette.text, palette.surface, 110);
+        if kind.is_empty() {
+            let line = RECT {
+                left,
+                right,
+                ..area
+            };
+            draw_text(item.hDC, (*state).font, palette.text, &label, line, DT_LEFT);
+        } else {
+            let middle = area.top + (area.bottom - area.top) / 2;
+            let name = RECT {
+                left,
+                top: area.top + scale(3),
+                right,
+                bottom: middle + scale(2),
+            };
+            draw_text(item.hDC, (*state).font, palette.text, &label, name, DT_LEFT);
+            let detail = RECT {
+                left,
+                top: middle + scale(1),
+                right,
+                bottom: area.bottom - scale(4),
+            };
+            draw_text(
+                item.hDC,
+                (*state).small_font,
+                secondary,
+                kind,
+                detail,
+                DT_LEFT,
+            );
+        }
+        if action_width > 0 {
+            let hint = RECT {
+                left: area.right - scale(12) - action_width,
+                right: area.right - scale(12),
+                ..area
+            };
+            draw_text(
+                item.hDC,
+                (*state).small_font,
+                palette.accent,
+                &format!("{action}  \u{21B5}"),
+                hint,
+                DT_RIGHT,
+            );
+        }
+        RestoreDC(item.hDC, saved);
+    }
 }
 
 unsafe fn fill_windows(state: *mut State, results: HWND, title: &str) {
@@ -1095,6 +1332,20 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                 GetClientRect(hwnd, &mut rect);
                 FillRect(wp as HDC, &rect, (*state).background);
                 1
+            }
+            WM_DRAWITEM if wp == RESULTS && lp != 0 => {
+                draw_result(
+                    state,
+                    &*(lp as *const windows_sys::Win32::UI::Controls::DRAWITEMSTRUCT),
+                );
+                1
+            }
+            icons::READY => {
+                if (*state).icons.as_mut().is_some_and(icons::Cache::receive) {
+                    request_icons(state);
+                    InvalidateRect((*state).results, std::ptr::null(), 0);
+                }
+                0
             }
             WM_CTLCOLOREDIT | WM_CTLCOLORLISTBOX => {
                 SetBkColor(wp as HDC, (*state).palette.surface);
