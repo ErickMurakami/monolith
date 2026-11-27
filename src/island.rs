@@ -617,7 +617,7 @@ unsafe fn layout(hwnd: HWND, state: *mut State) {
             && GetWindowRect(hwnd, &mut previous) != 0
             && (previous.left, previous.top, previous.right - previous.left) == (left, top, width)
             && previous.bottom - previous.top != height
-            && animations_enabled())
+            && overlay::animations_enabled())
         .then_some(previous.bottom - previous.top);
         SetWindowPos(
             hwnd,
@@ -646,15 +646,6 @@ unsafe fn layout(hwnd: HWND, state: *mut State) {
         if show_progress {
             update_progress(hwnd, state);
         }
-    }
-}
-
-/// Windows' "Animation effects" accessibility setting.
-fn animations_enabled() -> bool {
-    let mut enabled = 1_i32;
-    unsafe {
-        SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, 0, (&raw mut enabled).cast(), 0) == 0
-            || enabled != 0
     }
 }
 

@@ -39,6 +39,7 @@ use windows_sys::Win32::{
         Dwm::{DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND, DwmSetWindowAttribute},
         Gdi::*,
     },
+    System::SystemInformation::GetTickCount64,
     UI::{
         Accessibility::{HWINEVENTHOOK, SetWinEventHook, UnhookWinEvent},
         HiDpi::GetDpiForWindow,
@@ -50,6 +51,8 @@ const READY: u32 = WM_APP + 30;
 /// Posted to the launcher to open the Notification Centre.
 pub const OPEN: u32 = WM_APP + 31;
 const HIDE: usize = 1;
+const FADE: usize = 2;
+const FADE_MS: u64 = 150;
 const VISIBLE_MS: u32 = 6000;
 const QUEUE: usize = 4;
 const TOAST_HOST: &str = "Windows.UI.Core.CoreWindow";
@@ -79,6 +82,8 @@ pub struct Notifications {
 struct State {
     incoming: Receiver<Incoming>,
     current: Option<Rc<Incoming>>,
+    /// Fading in (true) or out, and when it started.
+    fade: Option<(bool, u64)>,
     /// Session-only history, newest first. Never written to disk.
     history: VecDeque<Entry>,
     centre: HWND,
@@ -110,7 +115,7 @@ impl Notifications {
                 return Err(io::Error::last_os_error());
             }
             let hwnd = CreateWindowExW(
-                overlay::EX_STYLE | WS_EX_TOPMOST | WS_EX_NOACTIVATE,
+                overlay::EX_STYLE | WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_LAYERED,
                 class_name.as_ptr(),
                 wide("Monolith notification").as_ptr(),
                 overlay::STYLE,
@@ -126,6 +131,8 @@ impl Notifications {
             if hwnd.is_null() {
                 return Err(io::Error::last_os_error());
             }
+            // A layered window stays invisible until it has an opacity.
+            SetLayeredWindowAttributes(hwnd, 0, 255, LWA_ALPHA);
             let corner = DWMWCP_ROUND;
             DwmSetWindowAttribute(
                 hwnd,
@@ -147,6 +154,7 @@ impl Notifications {
                 state: Box::new(State {
                     incoming,
                     current: None,
+                    fade: None,
                     history: VecDeque::new(),
                     centre: null_mut(),
                     scroll: 0,
@@ -479,6 +487,58 @@ unsafe fn present(hwnd: HWND, state: *mut State) {
         );
         InvalidateRect(hwnd, std::ptr::null(), 1);
         SetTimer(hwnd, HIDE, VISIBLE_MS, None);
+        start_fade(hwnd, state, true);
+    }
+}
+
+/// Opacity after `elapsed` milliseconds of a linear fade, and whether it finished.
+fn fade_alpha(fading_in: bool, elapsed: u64) -> (u8, bool) {
+    let progress = (elapsed.min(FADE_MS) * 255 / FADE_MS) as u8;
+    (
+        if fading_in { progress } else { 255 - progress },
+        elapsed >= FADE_MS,
+    )
+}
+
+unsafe fn start_fade(hwnd: HWND, state: *mut State, fading_in: bool) {
+    unsafe {
+        if !overlay::animations_enabled() {
+            finish_fade(hwnd, state, fading_in);
+            return;
+        }
+        (*state).fade = Some((fading_in, GetTickCount64()));
+        if fading_in {
+            SetLayeredWindowAttributes(hwnd, 0, 0, LWA_ALPHA);
+        }
+        SetTimer(hwnd, FADE, 15, None);
+    }
+}
+
+unsafe fn step_fade(hwnd: HWND, state: *mut State) {
+    unsafe {
+        let Some((fading_in, started)) = (*state).fade else {
+            KillTimer(hwnd, FADE);
+            return;
+        };
+        let (alpha, finished) = fade_alpha(fading_in, GetTickCount64().saturating_sub(started));
+        if finished {
+            finish_fade(hwnd, state, fading_in);
+        } else {
+            SetLayeredWindowAttributes(hwnd, 0, alpha, LWA_ALPHA);
+        }
+    }
+}
+
+/// End any fade: fully opaque when showing, hidden (and reset to opaque) otherwise.
+unsafe fn finish_fade(hwnd: HWND, state: *mut State, visible: bool) {
+    unsafe {
+        KillTimer(hwnd, FADE);
+        (*state).fade = None;
+        if !visible {
+            ShowWindow(hwnd, SW_HIDE);
+            (*state).current = None;
+        }
+        SetLayeredWindowAttributes(hwnd, 0, 255, LWA_ALPHA);
     }
 }
 
@@ -608,8 +668,11 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
             WM_ERASEBKGND => 1,
             WM_TIMER if wp == HIDE => {
                 KillTimer(hwnd, HIDE);
-                ShowWindow(hwnd, SW_HIDE);
-                (*state).current = None;
+                start_fade(hwnd, state, false);
+                0
+            }
+            WM_TIMER if wp == FADE => {
+                step_fade(hwnd, state);
                 0
             }
             WM_LBUTTONUP => {
@@ -623,8 +686,8 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                     let _ = target.activate();
                 }
                 KillTimer(hwnd, HIDE);
-                ShowWindow(hwnd, SW_HIDE);
-                (*state).current = None;
+                // A click hides at once; any fade in progress is cancelled.
+                finish_fade(hwnd, state, false);
                 0
             }
             WM_MOUSEACTIVATE => MA_NOACTIVATE as LRESULT,
@@ -1050,5 +1113,14 @@ mod tests {
         assert!(hidden.body.is_empty());
         let shown = withhold(compose("A".into(), vec!["T".into()]).unwrap(), None);
         assert_eq!(shown.title, "T");
+    }
+
+    #[test]
+    fn fades_linearly_in_and_out() {
+        assert_eq!(fade_alpha(true, 0), (0, false));
+        assert_eq!(fade_alpha(true, FADE_MS / 2).0, 127);
+        assert_eq!(fade_alpha(true, FADE_MS), (255, true));
+        assert_eq!(fade_alpha(false, 0), (255, false));
+        assert_eq!(fade_alpha(false, FADE_MS * 3), (0, true));
     }
 }

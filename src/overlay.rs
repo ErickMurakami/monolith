@@ -151,6 +151,15 @@ pub fn spotlight_bounds(work: RECT, dpi: u32) -> RECT {
     }
 }
 
+/// Windows' "Animation effects" accessibility setting; transitions honour it.
+pub fn animations_enabled() -> bool {
+    let mut enabled = 1_i32;
+    unsafe {
+        SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, 0, (&raw mut enabled).cast(), 0) == 0
+            || enabled != 0
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

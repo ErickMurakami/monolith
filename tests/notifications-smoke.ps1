@@ -6,6 +6,12 @@ $capturePath = $Capture
 . (Join-Path $PSScriptRoot 'desktop-smoke.ps1') -HelpersOnly
 Add-Type -AssemblyName System.Drawing
 $null = [DesktopSmoke]::SetThreadDpiAwarenessContext([IntPtr](-4))
+Add-Type @"
+using System; using System.Runtime.InteropServices;
+public static class NotificationSmoke {
+    [DllImport("user32.dll")] public static extern bool GetLayeredWindowAttributes(IntPtr hwnd, out uint key, out byte alpha, out uint flags);
+}
+"@
 # Use the real profile: the Shell resolves app icons through it. Flags enable the
 # surfaces, so no configuration file is written.
 $p = $null
@@ -22,6 +28,20 @@ try {
   $sw = [Diagnostics.Stopwatch]::StartNew()
   Wait-Until { [DesktopSmoke]::FindVisibleForProcess('MonolithNotification', [uint32]$p.Id) -ne [IntPtr]::Zero } 'The banner did not appear.' 5
   "banner after $($sw.ElapsedMilliseconds) ms"
+  # The banner fades in: sample its opacity during the first 300 ms.
+  $fading = [DesktopSmoke]::FindVisibleForProcess('MonolithNotification', [uint32]$p.Id)
+  $alphas = [Collections.Generic.List[int]]::new()
+  $fadeClock = [Diagnostics.Stopwatch]::StartNew()
+  while ($fadeClock.ElapsedMilliseconds -lt 300) {
+    [byte]$alpha = 0; [uint32]$key = 0; [uint32]$flags = 0
+    if ([NotificationSmoke]::GetLayeredWindowAttributes($fading, [ref]$key, [ref]$alpha, [ref]$flags)) { $alphas.Add($alpha) }
+    Start-Sleep -Milliseconds 8
+  }
+  $partial = @($alphas | Where-Object { $_ -gt 0 -and $_ -lt 255 } | Select-Object -Unique)
+  "fade-in opacity: $($partial -join ',') -> $($alphas[$alphas.Count - 1])"
+  if ($alphas[$alphas.Count - 1] -ne 255) { throw 'The banner did not become fully opaque.' }
+  # Polling starts partway through the 150 ms fade; one partial value proves it.
+  if ($partial.Count -lt 1) { throw 'The banner did not fade in.' }
   $banner = [DesktopSmoke]::FindVisibleForProcess('MonolithNotification', [uint32]$p.Id)
   $b = [DesktopSmoke]::Bounds($banner); "banner bounds: $($b -join ',')"
   $island = [DesktopSmoke]::FindVisibleForProcess('MonolithIsland', [uint32]$p.Id)
