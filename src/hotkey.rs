@@ -26,6 +26,8 @@ pub struct Hotkey {
     window: HWND,
     registered: bool,
     mission_registered: bool,
+    /// The chord that opens Spotlight, for display.
+    chord: Option<&'static str>,
     bridge: Option<SpaceBridge>,
     pub notice: Option<Notice>,
 }
@@ -43,6 +45,7 @@ impl Hotkey {
             window,
             registered: false,
             mission_registered: false,
+            chord: None,
             bridge: None,
             notice: None,
         };
@@ -57,13 +60,21 @@ impl Hotkey {
         };
         if let Some(preferred) = preferred {
             match register(window, ID, preferred, VK_SPACE) {
-                Ok(()) => binding.registered = true,
+                Ok(()) => {
+                    binding.registered = true;
+                    binding.chord = Some(if preferred == MOD_WIN {
+                        "Win + Space"
+                    } else {
+                        "Ctrl + Alt + Space"
+                    });
+                }
                 Err(error)
                     if preferred == MOD_WIN && error == ERROR_HOTKEY_ALREADY_REGISTERED as i32 =>
                 {
                     match register(window, ID, MOD_CONTROL | MOD_ALT, VK_SPACE) {
                         Ok(()) => {
                             binding.registered = true;
+                            binding.chord = Some("Ctrl + Alt + Space");
                             chords.spotlight = win_space_bridge;
                             if !win_space_bridge {
                                 binding.notice = Some(Notice::Alternate);
@@ -82,6 +93,9 @@ impl Hotkey {
         }
         if chords.spotlight || chords.workspaces {
             binding.bridge = SpaceBridge::start(chords).ok();
+            if binding.bridge.is_some() && chords.spotlight {
+                binding.chord = Some("Win + Space");
+            }
             if binding.bridge.is_none() && chords.spotlight {
                 binding.notice = Some(Notice::Alternate);
             }
@@ -91,6 +105,10 @@ impl Hotkey {
 
     pub fn available(&self) -> bool {
         self.registered
+    }
+
+    pub fn chord(&self) -> Option<&'static str> {
+        self.chord
     }
 
     /// Spotlight has handled the shortcut. Replay keys typed during a Win+Space bridge.

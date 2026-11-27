@@ -37,6 +37,13 @@ const RESULT_LIMIT: usize = 60;
 const DISMISS_INACTIVE: u32 = WM_APP + 2;
 const SPOTLIGHT_FADE: usize = 0x51;
 const SPOTLIGHT_FADE_MS: u64 = 120;
+// Spotlight geometry in device-independent pixels.
+const FIELD_TOP: i32 = 14;
+const FIELD_HEIGHT: i32 = 42;
+const GLYPH: i32 = 40;
+const CHIP: i32 = 124;
+const RESULTS_TOP: i32 = FIELD_TOP + FIELD_HEIGHT + 10;
+const FOOTER: i32 = 36;
 
 thread_local! {
     static FADE_STARTED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
@@ -65,6 +72,8 @@ struct State {
     icons: Option<icons::Cache>,
     small_font: HFONT,
     glyph_font: HFONT,
+    /// The registered opening chord shown in the search field.
+    chord: Option<&'static str>,
 }
 
 struct SurfaceOptions {
@@ -246,6 +255,7 @@ pub fn run() -> io::Result<()> {
             icons: None,
             small_font: null_mut(),
             glyph_font: null_mut(),
+            chord: None,
         });
         let hwnd = CreateWindowExW(
             overlay::EX_STYLE | WS_EX_TOPMOST | WS_EX_LAYERED,
@@ -281,6 +291,7 @@ pub fn run() -> io::Result<()> {
             settings.win_space_override,
             settings.workspace_shortcuts,
         );
+        (*state_ptr).chord = hotkey.chord();
         let order_path = config_path.with_file_name("dock-order.toml");
         let pins = if show_dock && !settings.dock_pins.is_empty() {
             let apps = (*state_ptr)
@@ -793,15 +804,30 @@ unsafe fn layout(hwnd: HWND, state: *mut State) {
         let mut area = RECT::default();
         GetClientRect(hwnd, &mut area);
         let width = (area.right - scale(32)).max(1);
-        MoveWindow(edit, scale(16), scale(18), width, scale(27), 1);
+        // The edit sits inside the painted field, after the search glyph and before
+        // the shortcut chip.
+        let chip = if (*state).chord.is_some() {
+            scale(CHIP)
+        } else {
+            0
+        };
+        MoveWindow(
+            edit,
+            scale(16 + GLYPH),
+            scale(FIELD_TOP + (FIELD_HEIGHT - 27) / 2),
+            (width - scale(GLYPH) - chip - scale(12)).max(1),
+            scale(27),
+            1,
+        );
         MoveWindow(
             results,
             scale(16),
-            scale(57),
+            scale(RESULTS_TOP),
             width,
-            (area.bottom - scale(73)).max(1),
+            (area.bottom - scale(RESULTS_TOP + FOOTER)).max(1),
             1,
         );
+        InvalidateRect(hwnd, std::ptr::null(), 1);
         SendMessageW(
             edit,
             EM_SETMARGINS,
@@ -821,11 +847,11 @@ unsafe fn fit_results(hwnd: HWND, state: *mut State) {
                 SetFocus((*state).edit);
             }
             ShowWindow(results, SW_HIDE);
-            overlay::scale(61, dpi)
+            overlay::scale(FIELD_TOP * 2 + FIELD_HEIGHT, dpi)
         } else {
             ShowWindow(results, SW_SHOWNA);
             let row = (SendMessageW(results, LB_GETITEMHEIGHT, 0, 0) as i32).max(1);
-            overlay::scale(73, dpi) + count * row
+            overlay::scale(RESULTS_TOP + FOOTER, dpi) + count * row
         };
         let mut frame = RECT::default();
         if GetWindowRect(hwnd, &mut frame) == 0 {
@@ -1119,6 +1145,93 @@ unsafe fn draw_result(state: *mut State, item: &windows_sys::Win32::UI::Controls
     }
 }
 
+/// The search field frame, glyph and shortcut chip, and the keyboard guidance footer.
+unsafe fn paint_spotlight(hwnd: HWND, state: *mut State) {
+    unsafe {
+        let mut paint = PAINTSTRUCT::default();
+        let hdc = BeginPaint(hwnd, &mut paint);
+        if hdc.is_null() {
+            return;
+        }
+        let palette = (*state).palette;
+        let scale = |value| overlay::scale(value, GetDpiForWindow(hwnd));
+        let mut area = RECT::default();
+        GetClientRect(hwnd, &mut area);
+        overlay::fill(hdc, &area, palette.background);
+        SetBkMode(hdc, TRANSPARENT as i32);
+        let field = RECT {
+            left: scale(16),
+            top: scale(FIELD_TOP),
+            right: area.right - scale(16),
+            bottom: scale(FIELD_TOP + FIELD_HEIGHT),
+        };
+        // A restrained blue outline marks keyboard focus in the field.
+        let focused = GetFocus() == (*state).edit;
+        let outline = if focused {
+            palette.accent
+        } else {
+            tint(palette.surface, palette.text, 40)
+        };
+        overlay::fill(hdc, &field, outline);
+        let border = scale(1).max(1);
+        let inner = RECT {
+            left: field.left + border,
+            top: field.top + border,
+            right: field.right - border,
+            bottom: field.bottom - border,
+        };
+        overlay::fill(hdc, &inner, palette.surface);
+        let glyph = RECT {
+            left: field.left,
+            right: field.left + scale(GLYPH),
+            ..field
+        };
+        let secondary = tint(palette.text, palette.surface, 110);
+        // Segoe Fluent Icons: search.
+        draw_text(
+            hdc,
+            (*state).glyph_font,
+            secondary,
+            "\u{E721}",
+            glyph,
+            DT_CENTER,
+        );
+        if let Some(chord) = (*state).chord {
+            let chip = RECT {
+                left: field.right - scale(CHIP),
+                top: field.top + scale(9),
+                right: field.right - scale(8),
+                bottom: field.bottom - scale(9),
+            };
+            overlay::fill(hdc, &chip, palette.pressed);
+            draw_text(hdc, (*state).small_font, secondary, chord, chip, DT_CENTER);
+        }
+        if IsWindowVisible((*state).results) != 0 {
+            let portuguese = (*state).portuguese;
+            let guidance = if portuguese {
+                "\u{2191} \u{2193}  Navegar      \u{21B5}  Abrir      Ctrl+\u{21B5}  Nova área      Esc  Fechar"
+            } else {
+                "\u{2191} \u{2193}  Navigate      \u{21B5}  Open      Ctrl+\u{21B5}  New workspace      Esc  Close"
+            };
+            let footer = RECT {
+                left: scale(20),
+                top: area.bottom - scale(FOOTER),
+                right: area.right - scale(20),
+                bottom: area.bottom,
+            };
+            draw_text(
+                hdc,
+                (*state).small_font,
+                secondary,
+                guidance,
+                footer,
+                DT_LEFT,
+            );
+        }
+        EndPaint(hwnd, &paint);
+    }
+}
+
 unsafe fn fill_windows(state: *mut State, results: HWND, title: &str) {
     unsafe {
         let portuguese = (*state).portuguese;
@@ -1333,6 +1446,10 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                 FillRect(wp as HDC, &rect, (*state).background);
                 1
             }
+            WM_PAINT => {
+                paint_spotlight(hwnd, state);
+                0
+            }
             WM_DRAWITEM if wp == RESULTS && lp != 0 => {
                 draw_result(
                     state,
@@ -1357,6 +1474,10 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                 let notification = (wp >> 16) as u32 & 0xffff;
                 if id == EDIT && notification == EN_CHANGE {
                     refresh(state);
+                }
+                if id == EDIT && matches!(notification, EN_SETFOCUS | EN_KILLFOCUS) {
+                    // Repaint the field outline that marks keyboard focus.
+                    InvalidateRect(hwnd, std::ptr::null(), 0);
                 }
                 if id == RESULTS && notification == LBN_DBLCLK {
                     open_selected(hwnd, state);
