@@ -185,6 +185,14 @@ impl Dock {
             if handle.is_null() {
                 return Err(io::Error::last_os_error());
             }
+            // A rounded floating surface rather than a square bar.
+            let corner = windows_sys::Win32::Graphics::Dwm::DWMWCP_ROUND;
+            windows_sys::Win32::Graphics::Dwm::DwmSetWindowAttribute(
+                handle,
+                windows_sys::Win32::Graphics::Dwm::DWMWA_WINDOW_CORNER_PREFERENCE as u32,
+                (&raw const corner).cast(),
+                size_of::<i32>() as u32,
+            );
             let mut dock = Self {
                 handle,
                 hooks: Vec::new(),
@@ -761,7 +769,8 @@ unsafe fn refresh(hwnd: HWND, state: *mut State) {
 
         let work = display.rcWork;
         let inset = scale(5);
-        let step = scale(76).min(((work.right - work.left - 2 * inset) / 2).max(1));
+        // Compact, near-square tiles with predictable spacing.
+        let step = scale(44).min(((work.right - work.left - 2 * inset) / 2).max(1));
         let capacity =
             (((work.right - work.left - 2 * inset) / step) - 2).clamp(0, CAPACITY as i32) as usize;
         let inventory = desktop::snapshot().ok().map(Rc::new);
@@ -782,7 +791,8 @@ unsafe fn refresh(hwnd: HWND, state: *mut State) {
         (&mut *state).request_icons();
         let button_count = pin_count + (*state).groups.len() + 2;
         let width = button_count as i32 * step + 2 * inset;
-        let height = scale(37);
+        // 40 DIP plus margin still fits the native taskbar band at 125% scaling.
+        let height = scale(40);
         let left = work.left + ((work.right - work.left - width) / 2).max(0);
         let margin = if (*state).auto_hide { 0 } else { scale(8) };
         let top = band.map_or(work.bottom - height - margin, |band| {
@@ -821,7 +831,7 @@ unsafe fn refresh(hwnd: HWND, state: *mut State) {
                 null_mut(),
                 inset + position * step,
                 inset,
-                step - scale(3),
+                step - scale(4),
                 height - 2 * inset,
                 SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW,
             );
@@ -876,14 +886,37 @@ unsafe fn draw(state: *mut State, item: &DRAWITEMSTRUCT) {
         if saved == 0 {
             return;
         }
+        // Tiles sit directly on the Dock surface; only a pressed or active tile is
+        // raised on a subtle rounded square, as in the approved reference.
+        let active = (&*state)
+            .live_group(item.CtlID)
+            .is_some_and(WindowGroup::active);
         let fill = if pressed {
             palette.pressed
-        } else {
+        } else if active {
             palette.surface
+        } else {
+            palette.background
         };
-        SetDCBrushColor(item.hDC, fill);
         let brush = GetStockObject(DC_BRUSH) as HBRUSH;
+        SetDCBrushColor(item.hDC, palette.background);
         FillRect(item.hDC, &area, brush);
+        if fill != palette.background {
+            let radius = overlay::scale(10, (*state).dpi);
+            let tile = CreateRoundRectRgn(
+                area.left,
+                area.top,
+                area.right + 1,
+                area.bottom + 1,
+                radius,
+                radius,
+            );
+            if !tile.is_null() {
+                SetDCBrushColor(item.hDC, fill);
+                FillRgn(item.hDC, tile, brush);
+                DeleteObject(tile);
+            }
+        }
 
         let font = (*state).font;
         if !font.is_null() {
@@ -891,6 +924,44 @@ unsafe fn draw(state: *mut State, item: &DRAWITEMSTRUCT) {
         }
         SetBkMode(item.hDC, TRANSPARENT as i32);
         SetTextColor(item.hDC, palette.text);
+        // System actions use monochrome Segoe Fluent glyphs: search and power.
+        let glyph = match item.CtlID {
+            SPOTLIGHT => Some("\u{E721}"),
+            EXIT => Some("\u{E7E8}"),
+            _ => None,
+        };
+        if let Some(glyph) = glyph {
+            let glyph_font = CreateFontW(
+                -overlay::scale(16, (*state).dpi),
+                0,
+                0,
+                0,
+                FW_NORMAL as i32,
+                0,
+                0,
+                0,
+                1,
+                0,
+                0,
+                0,
+                0,
+                wide("Segoe Fluent Icons").as_ptr(),
+            );
+            let previous = SelectObject(item.hDC, glyph_font);
+            let mut text: Vec<u16> = glyph.encode_utf16().collect();
+            let mut bounds = area;
+            DrawTextW(
+                item.hDC,
+                text.as_mut_ptr(),
+                text.len() as i32,
+                &mut bounds,
+                DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
+            );
+            SelectObject(item.hDC, previous);
+            DeleteObject(glyph_font);
+            RestoreDC(item.hDC, saved);
+            return;
+        }
         let icon_drawn = (&*state).icon_path(item.CtlID).is_some_and(|path| {
             (*state).icons.as_ref().is_some_and(|cache| {
                 let size = overlay::scale(21, (*state).dpi).min(area.bottom - area.top - 4);
