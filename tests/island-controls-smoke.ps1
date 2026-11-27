@@ -82,7 +82,22 @@ session.setActionHandler('seekto', details => { audio.currentTime = details.seek
     if ((Read-Text $label) -like '*Fixture album*') { throw 'The compact Island should not show the album.' }
 
     # WM_COMMAND with STN_CLICKED from the label expands the Island.
+    $compactHeight = ([DesktopSmoke]::Bounds($island))[3] - ([DesktopSmoke]::Bounds($island))[1]
     [void][DesktopSmoke]::Post($island, 0x0111, [UIntPtr]::new([uint32]1), $label)
+    # Sample the height while the Island expands: it should pass through
+    # intermediate sizes and settle within the 180 ms transition.
+    $heights = [Collections.Generic.List[int]]::new()
+    $clock = [Diagnostics.Stopwatch]::StartNew()
+    while ($clock.ElapsedMilliseconds -lt 450) {
+        $b = [DesktopSmoke]::Bounds($island)
+        $heights.Add($b[3] - $b[1])
+        Start-Sleep -Milliseconds 8
+    }
+    $expandedHeight = $heights[$heights.Count - 1]
+    $intermediate = @($heights | Where-Object { $_ -gt $compactHeight -and $_ -lt $expandedHeight } | Select-Object -Unique)
+    "expansion heights: $compactHeight -> $($intermediate -join ',') -> $expandedHeight"
+    if ($expandedHeight -le $compactHeight) { throw 'The Island did not grow when expanded.' }
+    if ($intermediate.Count -lt 2) { throw 'The Island expansion was not animated.' }
     $time = [DesktopSmoke]::GetDlgItem($island, 8)
     Wait-Until { (Read-Text $label) -like '*Verification track*Local fixture*Fixture album*' } 'The expanded Island did not show the album.'
     Wait-Until { [DesktopSmoke]::IsWindowVisible($time) -and (Read-Text $time) -match '^\d+:\d\d / 1:00$' } 'The expanded Island did not show elapsed and total time.'

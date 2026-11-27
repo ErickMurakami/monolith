@@ -41,6 +41,7 @@
 - Added a session-only Notification Centre with unread markers, dismissal and Clear all.
 - The Top Bar has Control Center and Notification Centre buttons with an unread indicator.
 - The expanded Island shows album and elapsed/total time, offers supported shuffle and repeat, and seeks on click.
+- The Island animates expansion and collapse over 180 ms, honouring the Windows animation setting.
 - Control Center adjusts internal display brightness directly.
 - Control Center shows Wi-Fi and Bluetooth state and switches the radios directly.
 - Notification text can be withheld from banners and history.

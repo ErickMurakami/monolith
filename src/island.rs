@@ -11,7 +11,7 @@ use windows_sys::Win32::{
     Foundation::{FILETIME, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
     Graphics::Gdi::*,
     System::{
-        SystemInformation::GetSystemTimeAsFileTime,
+        SystemInformation::{GetSystemTimeAsFileTime, GetTickCount64},
         SystemServices::{SS_CENTERIMAGE, SS_ENDELLIPSIS, SS_NOTIFY, SS_OWNERDRAW, SS_RIGHT},
     },
     UI::{
@@ -34,6 +34,15 @@ const REPEAT: usize = 7;
 const TIME: usize = 8;
 const REPOSITION: usize = 1;
 const PROGRESS: usize = 2;
+const ANIMATE: usize = 3;
+const ANIMATION_MS: u64 = 180;
+
+#[derive(Clone, Copy)]
+struct Animation {
+    from: i32,
+    to: i32,
+    started: u64,
+}
 
 thread_local! {
     static TARGET: Cell<HWND> = const { Cell::new(null_mut()) };
@@ -64,6 +73,7 @@ struct State {
     extras: [HWND; 2],
     /// Elapsed and total time beside the progress bar.
     time: HWND,
+    animation: Option<Animation>,
 }
 
 impl Island {
@@ -123,6 +133,7 @@ impl Island {
                     expanded: false,
                     extras: [null_mut(); 2],
                     time: null_mut(),
+                    animation: None,
                 }),
             };
             if island.state.brush.is_null() {
@@ -600,18 +611,89 @@ unsafe fn layout(hwnd: HWND, state: *mut State) {
             }
             ShowWindow(time, SW_HIDE);
         }
+        // Expanding or collapsing in place animates the height; everything else snaps.
+        let mut previous = RECT::default();
+        let start_height = (IsWindowVisible(hwnd) != 0
+            && GetWindowRect(hwnd, &mut previous) != 0
+            && (previous.left, previous.top, previous.right - previous.left) == (left, top, width)
+            && previous.bottom - previous.top != height
+            && animations_enabled())
+        .then_some(previous.bottom - previous.top);
         SetWindowPos(
             hwnd,
             HWND_TOPMOST,
             left,
             top,
             width,
-            height,
+            start_height.unwrap_or(height),
             SWP_SHOWWINDOW | SWP_NOACTIVATE,
         );
+        match start_height {
+            Some(from) => {
+                (*state).animation = Some(Animation {
+                    from,
+                    to: height,
+                    started: GetTickCount64(),
+                });
+                SetTimer(hwnd, ANIMATE, 15, None);
+            }
+            None => {
+                KillTimer(hwnd, ANIMATE);
+                (*state).animation = None;
+            }
+        }
         InvalidateRect(hwnd, std::ptr::null(), 1);
         if show_progress {
             update_progress(hwnd, state);
+        }
+    }
+}
+
+/// Windows' "Animation effects" accessibility setting.
+fn animations_enabled() -> bool {
+    let mut enabled = 1_i32;
+    unsafe {
+        SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, 0, (&raw mut enabled).cast(), 0) == 0
+            || enabled != 0
+    }
+}
+
+/// Ease-out cubic height between `from` and `to` after `elapsed` milliseconds.
+fn animated_height(from: i32, to: i32, elapsed: u64) -> (i32, bool) {
+    if elapsed >= ANIMATION_MS {
+        return (to, true);
+    }
+    let progress = elapsed as f64 / ANIMATION_MS as f64;
+    let eased = 1.0 - (1.0 - progress).powi(3);
+    (from + ((to - from) as f64 * eased).round() as i32, false)
+}
+
+unsafe fn step_animation(hwnd: HWND, state: *mut State) {
+    unsafe {
+        let Some(animation) = (*state).animation else {
+            KillTimer(hwnd, ANIMATE);
+            return;
+        };
+        let (height, finished) = animated_height(
+            animation.from,
+            animation.to,
+            GetTickCount64().saturating_sub(animation.started),
+        );
+        let mut bounds = RECT::default();
+        GetWindowRect(hwnd, &mut bounds);
+        SetWindowPos(
+            hwnd,
+            null_mut(),
+            0,
+            0,
+            bounds.right - bounds.left,
+            height,
+            SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
+        );
+        if finished {
+            // No timer remains once the Island is stationary.
+            KillTimer(hwnd, ANIMATE);
+            (*state).animation = None;
         }
     }
 }
@@ -695,6 +777,10 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                 layout(hwnd, state);
                 0
             }
+            WM_TIMER if wp == ANIMATE => {
+                step_animation(hwnd, state);
+                0
+            }
             WM_TIMER if wp == PROGRESS => {
                 update_progress(hwnd, state);
                 0
@@ -734,5 +820,22 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
             WM_MOUSEACTIVATE => MA_NOACTIVATE as LRESULT,
             _ => DefWindowProcW(hwnd, msg, wp, lp),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn eases_out_and_finishes_at_the_target() {
+        assert_eq!(animated_height(27, 100, 0), (27, false));
+        let (middle, finished) = animated_height(27, 100, ANIMATION_MS / 2);
+        // Ease-out covers most of the distance in the first half.
+        assert!(!finished && middle > 27 + (100 - 27) / 2, "{middle}");
+        assert_eq!(animated_height(27, 100, ANIMATION_MS), (100, true));
+        assert_eq!(animated_height(100, 27, ANIMATION_MS * 2), (27, true));
+        let (shrinking, _) = animated_height(100, 27, ANIMATION_MS / 2);
+        assert!(shrinking < 100 - (100 - 27) / 2, "{shrinking}");
     }
 }
