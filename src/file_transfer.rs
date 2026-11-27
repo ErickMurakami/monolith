@@ -557,4 +557,56 @@ mod tests {
             "no secondary volume or WSL distribution was available"
         );
     }
+
+    #[test]
+    #[ignore = "needs a second fixed volume D:"]
+    fn cancelling_a_cross_volume_move_midway_loses_no_file() {
+        const COUNT: usize = 300;
+        let root = Path::new(r"D:\");
+        if !root.is_dir() {
+            eprintln!("skipped: D: is unavailable");
+            return;
+        }
+        let fixture = Fixture::create();
+        let remote = Remote(root.join(format!("monolith-transfer-{}-cancel", std::process::id())));
+        fs::create_dir(&remote.0).unwrap();
+        let sources: Vec<PathBuf> = (0..COUNT)
+            .map(|index| {
+                let path = fixture.source(&format!("item-{index:03}.bin"));
+                fs::write(&path, vec![index as u8; 64 * 1024]).unwrap();
+                path
+            })
+            .collect();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let worker = {
+            let (sources, destination, cancel) =
+                (sources.clone(), remote.0.clone(), Arc::clone(&cancel));
+            std::thread::spawn(move || {
+                execute(null_mut(), &sources, &destination, true, FOF_SILENT, cancel)
+            })
+        };
+        // Cancel once the move is under way.
+        while fs::read_dir(&remote.0).unwrap().count() < 5 {
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        cancel.store(true, Ordering::Relaxed);
+        assert_eq!(
+            worker.join().unwrap().unwrap(),
+            TransferOutcome::Interrupted
+        );
+        let mut moved = 0;
+        for (index, source) in sources.iter().enumerate() {
+            let destination = remote.0.join(source.file_name().unwrap());
+            let (at_source, at_destination) = (source.exists(), destination.exists());
+            assert!(
+                at_source ^ at_destination,
+                "item {index} exists {at_source}/{at_destination}"
+            );
+            let kept = if at_source { source } else { &destination };
+            assert_eq!(fs::read(kept).unwrap(), vec![index as u8; 64 * 1024]);
+            moved += usize::from(at_destination);
+        }
+        assert!(moved < COUNT, "the move finished before cancellation");
+        eprintln!("cancelled after moving {moved} of {COUNT} items");
+    }
 }
