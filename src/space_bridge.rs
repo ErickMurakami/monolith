@@ -22,7 +22,11 @@ use std::{
 use windows_sys::Win32::{
     Foundation::{LPARAM, LRESULT, WPARAM},
     System::{LibraryLoader::GetModuleHandleW, Threading::GetCurrentThreadId},
-    UI::{Input::KeyboardAndMouse::*, WindowsAndMessaging::*},
+    UI::{
+        Accessibility::{SetWinEventHook, UnhookWinEvent},
+        Input::KeyboardAndMouse::*,
+        WindowsAndMessaging::*,
+    },
 };
 
 /// Tags Monolith's own synthetic input so the hook passes it through.
@@ -32,6 +36,7 @@ const LOGO_MARKER: u16 = 0xff;
 const RELEASE: u32 = WM_APP + 1;
 const LOGO_UP: u32 = WM_APP + 2;
 const BEGIN: u32 = WM_APP + 3;
+const WINDOW_CHANGED: u32 = WM_APP + 4;
 const POLL_MS: u32 = 10;
 /// Replay to whichever window has focus if Spotlight never reports.
 const CAPTURE_LIMIT_MS: u32 = 1500;
@@ -80,6 +85,8 @@ pub struct Chords {
     pub workspaces: bool,
     /// Win+Shift+1-9 through the opt-in virtual desktop adapter.
     pub moves: bool,
+    /// Fullscreen applications get their own desktop, through the same adapter.
+    pub fullscreen: bool,
 }
 
 #[derive(Default)]
@@ -225,7 +232,9 @@ unsafe fn run(ready: mpsc::Sender<io::Result<u32>>) {
         }
         THREAD.set(GetCurrentThreadId());
         // The private desktop adapter needs COM; it disables itself if its gates fail.
-        let moves = MACHINE.with_borrow(|machine| machine.chords.moves);
+        let (moves, fullscreen) =
+            MACHINE.with_borrow(|machine| (machine.chords.moves, machine.chords.fullscreen));
+        let moves = moves || fullscreen;
         let apartment = moves
             && windows::Win32::System::Com::CoInitializeEx(
                 None,
@@ -235,6 +244,26 @@ unsafe fn run(ready: mpsc::Sender<io::Result<u32>>) {
         if moves {
             MOVER.set(crate::virtual_desktops::Mover::connect());
         }
+        // Fullscreen detection follows foreground and window geometry changes.
+        let mut spaces = crate::workspaces::FullscreenSpaces::default();
+        let mut fullscreen_hooks = Vec::new();
+        if fullscreen && MOVER.with_borrow(Option::is_some) {
+            for event in [EVENT_SYSTEM_FOREGROUND, EVENT_OBJECT_LOCATIONCHANGE] {
+                let hook = SetWinEventHook(
+                    event,
+                    event,
+                    null_mut(),
+                    Some(window_changed),
+                    0,
+                    0,
+                    WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS,
+                );
+                if !hook.is_null() {
+                    fullscreen_hooks.push(hook);
+                }
+            }
+        }
+        let mut fullscreen_timer = 0;
         let _ = ready.send(Ok(GetCurrentThreadId()));
         let mut logo_timer = 0;
         let mut logo_waited = 0;
@@ -261,6 +290,18 @@ unsafe fn run(ready: mpsc::Sender<io::Result<u32>>) {
                         replay(&MACHINE.with_borrow_mut(Machine::release));
                     }
                 }
+                WINDOW_CHANGED if fullscreen_timer == 0 => {
+                    fullscreen_timer = SetTimer(null_mut(), 0, 300, None);
+                }
+                WM_TIMER if msg.wParam == fullscreen_timer && fullscreen_timer != 0 => {
+                    KillTimer(null_mut(), fullscreen_timer);
+                    fullscreen_timer = 0;
+                    MOVER.with_borrow(|mover| {
+                        if let Some(mover) = mover {
+                            spaces.check(mover);
+                        }
+                    });
+                }
                 RELEASE => {
                     finish(&mut capture_timer);
                 }
@@ -277,6 +318,9 @@ unsafe fn run(ready: mpsc::Sender<io::Result<u32>>) {
             }
         }
         UnhookWindowsHookEx(hook);
+        for hook in fullscreen_hooks {
+            UnhookWinEvent(hook);
+        }
         MOVER.set(None);
         if apartment {
             windows::Win32::System::Com::CoUninitialize();
@@ -387,6 +431,21 @@ fn send(events: &[INPUT]) -> bool {
     sent as usize == events.len()
 }
 
+/// Foreground and geometry changes schedule a coalesced fullscreen check.
+unsafe extern "system" fn window_changed(
+    _: windows_sys::Win32::UI::Accessibility::HWINEVENTHOOK,
+    _: u32,
+    hwnd: windows_sys::Win32::Foundation::HWND,
+    object: i32,
+    child: i32,
+    _: u32,
+    _: u32,
+) {
+    if object == OBJID_WINDOW && child == 0 && !hwnd.is_null() {
+        unsafe { PostThreadMessageW(THREAD.get(), WINDOW_CHANGED, 0, 0) };
+    }
+}
+
 unsafe extern "system" fn capture(code: i32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     unsafe {
         if code == HC_ACTION as i32 {
@@ -456,6 +515,7 @@ mod tests {
         mission_control: true,
         workspaces: true,
         moves: true,
+        fullscreen: false,
     };
     const NONE: Modifiers = Modifiers {
         logo: false,

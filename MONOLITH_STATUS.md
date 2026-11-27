@@ -117,7 +117,7 @@ The bridge now also serves the opt-in `workspace_shortcuts` setting: Win+1-9 sel
 
 Supervised checks still open: Wi-Fi toggling (Bluetooth, dead keys and the simulated swipe-up are verified), and a physical touchpad swipe and physical keyboard as the final confirmation.
 
-The opt-in private virtual desktop adapter (approved on 27 November 2026) now drives Win+Shift+1-9 with `desktop_moves = true`. `tests/desktop-move-smoke.ps1` moved another process's window to a temporary desktop without switching the view and cleaned up, in two runs. Still to build on it: giving fullscreen applications their own desktop automatically.
+The opt-in private virtual desktop adapter (approved on 27 November 2026) now drives Win+Shift+1-9 with `desktop_moves = true`. `tests/desktop-move-smoke.ps1` moved another process's window to a temporary desktop without switching the view and cleaned up, in two runs. `fullscreen_workspaces = true` gives fullscreen applications their own desktop. `tests/fullscreen-workspace-smoke.ps1` passed three runs: entering fullscreen moved another process's window to a new desktop, and leaving it returned the window and removed the desktop.
 
 Then continue with:
 - Notification actions. The listener API exposes no way to invoke toast buttons; clicking the banner already restores the source app window.

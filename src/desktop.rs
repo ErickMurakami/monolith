@@ -398,6 +398,35 @@ pub fn foreground_covers_monitor(monitor: HMONITOR, bounds: &RECT) -> bool {
     foreground_on_monitor(monitor).is_some_and(|hwnd| covers_display(hwnd, bounds))
 }
 
+/// Whether `hwnd` is a visible, eligible window covering its whole monitor.
+pub fn is_fullscreen(hwnd: HWND) -> bool {
+    unsafe {
+        if hwnd.is_null()
+            || windows_sys::Win32::UI::WindowsAndMessaging::IsWindow(hwnd) == 0
+            || IsIconic(hwnd) != 0
+            || !eligible(hwnd)
+        {
+            return false;
+        }
+        let monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONULL);
+        let mut info = MONITORINFO {
+            cbSize: size_of::<MONITORINFO>() as u32,
+            ..Default::default()
+        };
+        !monitor.is_null()
+            && GetMonitorInfoW(monitor, &mut info) != 0
+            && covers_display(hwnd, &info.rcMonitor)
+    }
+}
+
+/// The foreground window of another process when it is fullscreen.
+pub fn fullscreen_foreground() -> Option<HWND> {
+    let foreground = unsafe { GetForegroundWindow() };
+    (identity(foreground).is_some_and(|(process, _)| process != std::process::id())
+        && is_fullscreen(foreground))
+    .then_some(foreground)
+}
+
 pub fn foreground_covers_top_strip(monitor: HMONITOR, display: &RECT, strip: &RECT) -> bool {
     foreground_on_monitor(monitor).is_some_and(|hwnd| {
         if unsafe { IsZoomed(hwnd) } == 0 {

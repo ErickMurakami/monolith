@@ -24,6 +24,9 @@ pub struct Config {
     /// Experimental: Win+Shift+1-9 move the focused window through the private
     /// virtual desktop adapter, which disables itself on unsupported builds.
     pub desktop_moves: bool,
+    /// Experimental: fullscreen applications get their own desktop through the same
+    /// adapter and return when they leave fullscreen.
+    pub fullscreen_workspaces: bool,
     pub dock: bool,
     pub dock_pins: Vec<String>,
     pub dock_monitor: DockMonitor,

@@ -359,6 +359,146 @@ fn check() -> bool {
     remaining
 }
 
+/// A fullscreen window moved to a desktop of its own, and the desktop it left.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Space {
+    window: isize,
+    origin: DesktopId,
+    created: DesktopId,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum FullscreenStep {
+    /// Give this fullscreen window its own desktop.
+    Enter(isize),
+    /// The tracked window at this position left fullscreen or closed.
+    Leave(usize),
+    Idle,
+}
+
+fn plan(
+    spaces: &[Space],
+    fullscreen_foreground: Option<isize>,
+    still_fullscreen: impl Fn(isize) -> bool,
+    current: Option<DesktopId>,
+) -> FullscreenStep {
+    if let Some(index) = spaces
+        .iter()
+        .position(|space| !still_fullscreen(space.window))
+    {
+        return FullscreenStep::Leave(index);
+    }
+    match fullscreen_foreground {
+        // Never nest: a window already tracked, or one shown on a created desktop, stays.
+        Some(window)
+            if !spaces
+                .iter()
+                .any(|space| space.window == window || Some(space.created) == current) =>
+        {
+            FullscreenStep::Enter(window)
+        }
+        _ => FullscreenStep::Idle,
+    }
+}
+
+/// Opt-in: fullscreen applications occupy their own native desktop and return to
+/// where they came from when they leave fullscreen. Desktops are created and closed
+/// with the documented shortcuts; only moving the window uses the private adapter.
+#[derive(Default)]
+pub struct FullscreenSpaces {
+    spaces: Vec<Space>,
+}
+
+impl FullscreenSpaces {
+    pub fn check(&mut self, mover: &crate::virtual_desktops::Mover) {
+        use windows_sys::Win32::Foundation::HWND;
+        let fullscreen = |window: isize| crate::desktop::is_fullscreen(window as HWND);
+        // Each step changes desktop state, so re-plan after every one; bound the work.
+        for _ in 0..4 {
+            let current = read()
+                .ok()
+                .and_then(|workspaces| workspaces.current.map(|index| workspaces.ids[index]));
+            let foreground = crate::desktop::fullscreen_foreground().map(|hwnd| hwnd as isize);
+            match plan(&self.spaces, foreground, fullscreen, current) {
+                FullscreenStep::Idle => return,
+                FullscreenStep::Leave(index) => {
+                    let space = self.spaces.remove(index);
+                    leave(mover, space);
+                }
+                FullscreenStep::Enter(window) => match enter(mover, window) {
+                    Some(space) => self.spaces.push(space),
+                    None => return,
+                },
+            }
+        }
+    }
+}
+
+fn current_id() -> Option<DesktopId> {
+    read()
+        .ok()
+        .and_then(|workspaces| workspaces.current.map(|index| workspaces.ids[index]))
+}
+
+fn index_of(id: DesktopId) -> Option<usize> {
+    read()
+        .ok()?
+        .ids
+        .iter()
+        .position(|candidate| *candidate == id)
+}
+
+fn enter(mover: &crate::virtual_desktops::Mover, window: isize) -> Option<Space> {
+    use windows_sys::Win32::{Foundation::HWND, UI::WindowsAndMessaging::SetForegroundWindow};
+    let origin = current_id()?;
+    if !wait_until(1_000, || !any_modifier_held()) || !press(&[VK_LWIN, VK_LCONTROL, VK_D], 1) {
+        return None;
+    }
+    wait_until(1_500, || current_id().is_some_and(|id| id != origin));
+    let created = current_id().filter(|id| *id != origin)?;
+    let index = index_of(created)?;
+    if !mover.move_window(windows::Win32::Foundation::HWND(window as _), index) {
+        // Undo: the new desktop is current and empty.
+        close_current_if_empty(created);
+        if let Some(index) = index_of(origin) {
+            switch_to(index);
+        }
+        return None;
+    }
+    unsafe { SetForegroundWindow(window as HWND) };
+    Some(Space {
+        window,
+        origin,
+        created,
+    })
+}
+
+fn leave(mover: &crate::virtual_desktops::Mover, space: Space) {
+    use windows_sys::Win32::{Foundation::HWND, UI::WindowsAndMessaging::IsWindow};
+    let alive = unsafe { IsWindow(space.window as HWND) } != 0;
+    if alive && let Some(index) = index_of(space.origin) {
+        mover.move_window(windows::Win32::Foundation::HWND(space.window as _), index);
+    }
+    // Close the created desktop only while it is current and holds no other windows.
+    if current_id() == Some(space.created) {
+        close_current_if_empty(space.created);
+        if let Some(index) = index_of(space.origin) {
+            switch_to(index);
+        }
+    }
+}
+
+fn close_current_if_empty(created: DesktopId) {
+    let empty = crate::desktop::snapshot().is_ok_and(|snapshot| snapshot.windows.is_empty());
+    if empty
+        && current_id() == Some(created)
+        && wait_until(1_000, || !any_modifier_held())
+        && press(&[VK_LWIN, VK_LCONTROL, VK_F4], 1)
+    {
+        wait_until(1_500, || index_of(created).is_none());
+    }
+}
+
 fn any_modifier_held() -> bool {
     [VK_LWIN, VK_RWIN, VK_SHIFT, VK_CONTROL, VK_MENU]
         .into_iter()
@@ -491,6 +631,38 @@ mod tests {
             current: Some(0),
         };
         assert_eq!(single.summary(false), None);
+    }
+
+    #[test]
+    fn plans_fullscreen_spaces_without_nesting() {
+        let space = Space {
+            window: 7,
+            origin: [1; 16],
+            created: [2; 16],
+        };
+        // A new fullscreen window gets a desktop.
+        assert_eq!(
+            plan(&[], Some(7), |_| true, Some([1; 16])),
+            FullscreenStep::Enter(7)
+        );
+        // Already tracked, or another window on a created desktop: nothing to do.
+        assert_eq!(
+            plan(&[space], Some(7), |_| true, Some([2; 16])),
+            FullscreenStep::Idle
+        );
+        assert_eq!(
+            plan(&[space], Some(9), |_| true, Some([2; 16])),
+            FullscreenStep::Idle
+        );
+        // Leaving fullscreen returns the window before anything else happens.
+        assert_eq!(
+            plan(&[space], Some(9), |window| window != 7, Some([1; 16])),
+            FullscreenStep::Leave(0)
+        );
+        assert_eq!(
+            plan(&[], None, |_| true, Some([1; 16])),
+            FullscreenStep::Idle
+        );
     }
 
     #[test]
