@@ -497,7 +497,10 @@ mod tests {
     #[ignore = "needs a second fixed volume D: or the running archlinux WSL distribution"]
     fn transfers_across_volumes_and_into_wsl() {
         let mut exercised = 0;
-        for (index, root) in [r"D:\", r"\\wsl.localhost\archlinux\tmp"].iter().enumerate() {
+        for (index, root) in [r"D:\", r"\\wsl.localhost\archlinux\tmp"]
+            .iter()
+            .enumerate()
+        {
             let root = Path::new(root);
             if !root.is_dir() {
                 eprintln!("skipped unavailable {}", root.display());
