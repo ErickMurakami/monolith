@@ -11,7 +11,7 @@ use windows_sys::Win32::{
     Graphics::Gdi::*,
     System::{
         Power::{GetSystemPowerStatus, SYSTEM_POWER_STATUS},
-        SystemServices::SS_CENTERIMAGE,
+        SystemServices::SS_OWNERDRAW,
     },
     UI::{
         Controls::*, HiDpi::GetDpiForWindow, Input::KeyboardAndMouse::*, Shell::ShellExecuteW,
@@ -60,6 +60,10 @@ struct State {
     palette: Palette,
     portuguese: bool,
     font: HFONT,
+    /// Semibold, small and glyph fonts for the painted controls.
+    strong: HFONT,
+    small: HFONT,
+    glyphs: HFONT,
     dpi: u32,
     background: HBRUSH,
 }
@@ -135,6 +139,9 @@ impl ControlCenter {
                     palette,
                     portuguese,
                     font: null_mut(),
+                    strong: null_mut(),
+                    small: null_mut(),
+                    glyphs: null_mut(),
                     dpi: 0,
                     background: CreateSolidBrush(palette.background),
                 }),
@@ -166,7 +173,7 @@ impl ControlCenter {
             let static_class = wide("STATIC");
             let button_class = wide("BUTTON");
             let volume = label(portuguese, "Volume", "Volume");
-            child(static_class.as_ptr(), volume, SS_CENTERIMAGE, VOLUME_LABEL)?;
+            child(static_class.as_ptr(), volume, SS_OWNERDRAW, VOLUME_LABEL)?;
             let slider = child(
                 TRACKBAR_CLASSW,
                 volume,
@@ -186,7 +193,7 @@ impl ControlCenter {
             let brightness_label = child(
                 static_class.as_ptr(),
                 brightness_name,
-                SS_CENTERIMAGE,
+                SS_OWNERDRAW,
                 BRIGHTNESS_LABEL,
             )?;
             let brightness_slider = child(
@@ -202,7 +209,7 @@ impl ControlCenter {
             child(
                 static_class.as_ptr(),
                 label(portuguese, "Windows settings", "Configurações do Windows"),
-                SS_CENTERIMAGE,
+                SS_OWNERDRAW,
                 SETTINGS_LABEL,
             )?;
             for (index, (english, translated, _)) in SETTINGS.iter().enumerate() {
@@ -213,6 +220,14 @@ impl ControlCenter {
                     FIRST_SETTING + index,
                 )?;
             }
+            // A rounded floating panel, like the other desktop surfaces.
+            let corner = windows_sys::Win32::Graphics::Dwm::DWMWCP_ROUND;
+            windows_sys::Win32::Graphics::Dwm::DwmSetWindowAttribute(
+                hwnd,
+                windows_sys::Win32::Graphics::Dwm::DWMWA_WINDOW_CORNER_PREFERENCE as u32,
+                (&raw const corner).cast(),
+                size_of::<i32>() as u32,
+            );
             let state = &raw mut *panel.state;
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, state as isize);
             let anchor = if source.is_null() { previous } else { source };
@@ -299,7 +314,14 @@ impl Drop for ControlCenter {
             SetWindowLongPtrW(self.hwnd, GWLP_USERDATA, 0);
             DestroyWindow(self.hwnd);
             DeleteObject(self.state.background);
-            DeleteObject(self.state.font);
+            for font in [
+                self.state.font,
+                self.state.strong,
+                self.state.small,
+                self.state.glyphs,
+            ] {
+                DeleteObject(font);
+            }
         }
     }
 }
@@ -329,14 +351,10 @@ unsafe fn place(hwnd: HWND, state: *mut State, monitor: HMONITOR) {
         let dpi = GetDpiForWindow(hwnd);
         let scale = |dip| overlay::scale(dip, dpi);
         let margin = scale(8);
-        let width = scale(324).min((work.right - work.left - 2 * margin).max(1));
-        // A brightness row shifts the settings section down.
-        let shift = if (*state).brightness_level.is_some() {
-            60
-        } else {
-            0
-        };
-        let height = scale(248 + shift);
+        let width = scale(340).min((work.right - work.left - 2 * margin).max(1));
+        let brightness = (*state).brightness_level.is_some();
+        let rows = Rows::new(brightness);
+        let height = scale(rows.height);
         let x = (work.right - width - margin).max(work.left);
         let y = (work.top + scale(36))
             .min(work.bottom - height)
@@ -350,61 +368,130 @@ unsafe fn place(hwnd: HWND, state: *mut State, monitor: HMONITOR) {
             height,
             SWP_NOZORDER | SWP_NOACTIVATE,
         );
-
-        let font = if (*state).dpi == dpi {
-            null_mut()
-        } else {
-            CreateFontW(
-                -scale(14),
-                0,
-                0,
-                0,
-                FW_NORMAL as i32,
-                0,
-                0,
-                0,
-                1,
-                0,
-                0,
-                0,
-                0,
-                wide("Segoe UI").as_ptr(),
-            )
-        };
-        let padding = scale(12);
-        let body = (width - 2 * padding).max(1);
-        let gap = scale(4);
-        let half = ((body - gap) / 2).max(1);
-        let layout = |id: usize, left, top, width: i32, height| {
-            let child = GetDlgItem(hwnd, id as i32);
-            if !font.is_null() {
-                SendMessageW(child, WM_SETFONT, font as usize, 0);
+        if (*state).dpi != dpi {
+            let create = |size, weight: u32, face: &str| {
+                CreateFontW(
+                    -scale(size),
+                    0,
+                    0,
+                    0,
+                    weight as i32,
+                    0,
+                    0,
+                    0,
+                    1,
+                    0,
+                    0,
+                    CLEARTYPE_QUALITY as u32,
+                    0,
+                    wide(face).as_ptr(),
+                )
+            };
+            for font in [
+                (*state).font,
+                (*state).strong,
+                (*state).small,
+                (*state).glyphs,
+            ] {
+                DeleteObject(font);
             }
+            (*state).font = create(13, FW_NORMAL, "Segoe UI");
+            (*state).strong = create(13, FW_SEMIBOLD, "Segoe UI");
+            (*state).small = create(12, FW_NORMAL, "Segoe UI");
+            (*state).glyphs = create(16, FW_NORMAL, "Segoe Fluent Icons");
+            (*state).dpi = dpi;
+        }
+        let font = (*state).font;
+        let padding = scale(PADDING);
+        let body = (width - 2 * padding).max(1);
+        let gap = scale(8);
+        let half = ((body - gap) / 2).max(1);
+        let layout = |id: usize, left, top: i32, width: i32, height: i32| {
+            let child = GetDlgItem(hwnd, id as i32);
+            SendMessageW(child, WM_SETFONT, font as usize, 0);
             MoveWindow(child, left, scale(top), width.max(1), scale(height), 1);
         };
-        layout(VOLUME_LABEL, padding, 9, body, 22);
-        let mute_width = scale(82).min(half);
-        layout(SLIDER, padding, 33, body - mute_width - gap, 29);
-        layout(MUTE, padding + body - mute_width, 33, mute_width, 29);
-        if shift > 0 {
-            layout(BRIGHTNESS_LABEL, padding, 69, body, 22);
-            layout(BRIGHTNESS_SLIDER, padding, 93, body, 29);
-        }
-        layout(SETTINGS_LABEL, padding, 72 + shift, body, 25);
-        for index in 0..SETTINGS.len() {
-            let left = padding + (index as i32 % 2) * (half + gap);
+        // Wi-Fi and Bluetooth are toggle tiles at the top.
+        for index in 0..2 {
             layout(
                 FIRST_SETTING + index,
-                left,
-                100 + shift + index as i32 / 2 * 35,
+                padding + index as i32 * (half + gap),
+                rows.tiles,
                 half,
-                31,
+                TILE,
             );
         }
-        if !font.is_null() {
-            DeleteObject((*state).font);
-            (*state).font = font;
-            (*state).dpi = dpi;
+        let round = scale(ROUND);
+        layout(VOLUME_LABEL, padding, rows.volume, body, 20);
+        layout(MUTE, padding, rows.volume + 24, round, ROUND);
+        layout(
+            SLIDER,
+            padding + round + gap,
+            rows.volume + 24,
+            body - round - gap,
+            ROUND,
+        );
+        if brightness {
+            layout(BRIGHTNESS_LABEL, padding, rows.brightness, body, 20);
+            layout(
+                BRIGHTNESS_SLIDER,
+                padding + round + gap,
+                rows.brightness + 24,
+                body - round - gap,
+                ROUND,
+            );
+        }
+        layout(SETTINGS_LABEL, padding, rows.settings, body, 20);
+        for index in 2..SETTINGS.len() {
+            let slot = index as i32 - 2;
+            layout(
+                FIRST_SETTING + index,
+                padding + (slot % 2) * (half + gap),
+                rows.settings + 24 + slot / 2 * (PILL + 8),
+                half,
+                PILL,
+            );
+        }
+        RedrawWindow(
+            hwnd,
+            std::ptr::null(),
+            null_mut(),
+            RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN,
+        );
+    }
+}
+
+const PADDING: i32 = 16;
+const TILE: i32 = 60;
+const ROUND: i32 = 32;
+const PILL: i32 = 36;
+
+/// Vertical positions, in logical pixels, of the panel's sections.
+struct Rows {
+    tiles: i32,
+    volume: i32,
+    brightness: i32,
+    settings: i32,
+    height: i32,
+}
+
+impl Rows {
+    fn new(brightness: bool) -> Self {
+        let tiles = PADDING;
+        let volume = tiles + TILE + 20;
+        let brightness_row = volume + 24 + ROUND + 16;
+        let settings = if brightness {
+            brightness_row + 24 + ROUND + 20
+        } else {
+            brightness_row + 4
+        };
+        let height = settings + 24 + 3 * PILL + 2 * 8 + PADDING;
+        Self {
+            tiles,
+            volume,
+            brightness: brightness_row,
+            settings,
+            height,
         }
     }
 }
@@ -505,35 +592,195 @@ unsafe fn paint_slider(hwnd: HWND, draw: &NMCUSTOMDRAW, palette: Palette) {
         let mut thumb = RECT::default();
         SendMessageW(slider, TBM_GETCHANNELRECT, 0, &raw mut channel as isize);
         SendMessageW(slider, TBM_GETTHUMBRECT, 0, &raw mut thumb as isize);
-        overlay::fill(draw.hdc, &draw.rc, palette.background);
-        let middle = (thumb.top + thumb.bottom) / 2;
-        let thickness = overlay::scale(4, GetDpiForWindow(hwnd));
+        // The custom-draw rectangle covers only the thumb strip; centre on the control.
+        let mut client = RECT::default();
+        GetClientRect(slider, &mut client);
+        overlay::fill(draw.hdc, &client, palette.background);
+        let dpi = GetDpiForWindow(hwnd);
+        let middle = (client.top + client.bottom) / 2;
+        let thickness = overlay::scale(6, dpi);
         let track = RECT {
             top: middle - thickness / 2,
             bottom: middle - thickness / 2 + thickness,
             ..channel
         };
-        overlay::fill(draw.hdc, &track, palette.pressed);
+        let track_colour = overlay::mix(palette.background, palette.text, 16);
+        overlay::rounded(draw.hdc, &track, thickness / 2, track_colour, None);
         if IsWindowEnabled(slider) != 0 {
             let position = (thumb.left + thumb.right) / 2;
-            overlay::fill(
-                draw.hdc,
-                &RECT {
-                    right: position,
-                    ..track
-                },
-                palette.accent,
-            );
-            let size = overlay::scale(10, GetDpiForWindow(hwnd));
-            let thumb = RECT {
+            let played = RECT {
+                right: position.max(track.left + thickness),
+                ..track
+            };
+            overlay::rounded(draw.hdc, &played, thickness / 2, palette.accent, None);
+            let size = overlay::scale(16, dpi);
+            let knob = RECT {
                 left: position - size / 2,
                 top: middle - size / 2,
                 right: position - size / 2 + size,
                 bottom: middle - size / 2 + size,
             };
-            overlay::fill(draw.hdc, &thumb, palette.text);
-            if GetFocus() == slider {
-                DrawFocusRect(draw.hdc, &draw.rc);
+            let ring = (GetFocus() == slider).then_some((palette.accent, overlay::scale(2, dpi)));
+            overlay::rounded(draw.hdc, &knob, size / 2, palette.text, ring);
+        }
+    }
+}
+
+/// Glyphs for the settings entries, in `SETTINGS` order.
+const GLYPHS: [&str; 8] = [
+    "\u{E701}", "\u{E702}", "\u{E7F4}", "\u{E793}", "\u{E7F5}", "\u{E708}", "\u{E7E8}", "\u{E713}",
+];
+
+/// Paint the background, and the brightness glyph beside its slider.
+unsafe fn paint(hwnd: HWND, state: &State) {
+    unsafe {
+        let mut paint = PAINTSTRUCT::default();
+        let dc = BeginPaint(hwnd, &mut paint);
+        let mut client = RECT::default();
+        GetClientRect(hwnd, &mut client);
+        overlay::fill(dc, &client, state.palette.background);
+        if state.brightness_level.is_some() {
+            let scale = |dip| overlay::scale(dip, state.dpi);
+            let top = scale(Rows::new(true).brightness + 24);
+            let area = RECT {
+                left: scale(PADDING),
+                top,
+                right: scale(PADDING + ROUND),
+                bottom: top + scale(ROUND),
+            };
+            SetBkMode(dc, TRANSPARENT as i32);
+            overlay::text(
+                dc,
+                "\u{E706}",
+                area,
+                state.glyphs,
+                state.palette.text,
+                DT_CENTER,
+            );
+        }
+        EndPaint(hwnd, &paint);
+    }
+}
+
+unsafe fn draw_item(state: &State, item: &DRAWITEMSTRUCT) {
+    unsafe {
+        let dc = item.hDC;
+        let rect = item.rcItem;
+        let palette = state.palette;
+        let scale = |dip| overlay::scale(dip, state.dpi);
+        let secondary = overlay::mix(palette.text, palette.background, 35);
+        let muted = overlay::mix(palette.text, palette.background, 55);
+        let pressed = item.itemState & ODS_SELECTED != 0;
+        let focused = item.itemState & ODS_FOCUS != 0;
+        let disabled = item.itemState & ODS_DISABLED != 0;
+        let mut buffer = [0_u16; 128];
+        let length = GetWindowTextW(item.hwndItem, buffer.as_mut_ptr(), buffer.len() as i32);
+        let caption = String::from_utf16_lossy(&buffer[..length.max(0) as usize]);
+        // Captions read "Name · value"; the value is drawn apart from the name.
+        let (name, value) = caption
+            .split_once(" \u{b7} ")
+            .unwrap_or((caption.as_str(), ""));
+        overlay::fill(dc, &rect, palette.background);
+        SetBkMode(dc, TRANSPARENT as i32);
+        let surface = if pressed {
+            palette.pressed
+        } else {
+            palette.surface
+        };
+        let ring = focused.then_some((palette.accent, scale(2)));
+        let id = item.CtlID as usize;
+        match id {
+            VOLUME_LABEL | BRIGHTNESS_LABEL => {
+                overlay::text(dc, name, rect, state.strong, palette.text, DT_LEFT);
+                overlay::text(dc, value, rect, state.small, secondary, DT_RIGHT);
+            }
+            SETTINGS_LABEL => {
+                overlay::text(dc, &caption, rect, state.small, secondary, DT_LEFT);
+            }
+            MUTE => {
+                let muted_now = state.volume.is_some_and(|volume| volume.muted);
+                overlay::rounded(dc, &rect, (rect.right - rect.left) / 2, surface, ring);
+                let glyph = if muted_now { "\u{E74F}" } else { "\u{E767}" };
+                let colour = if disabled { muted } else { palette.text };
+                overlay::text(dc, glyph, rect, state.glyphs, colour, DT_CENTER);
+            }
+            _ => {
+                let Some(index) = id
+                    .checked_sub(FIRST_SETTING)
+                    .filter(|&index| index < SETTINGS.len())
+                else {
+                    return;
+                };
+                let tile = index < 2;
+                overlay::rounded(dc, &rect, scale(if tile { 14 } else { 10 }), surface, ring);
+                let height = rect.bottom - rect.top;
+                if tile {
+                    // A circle that turns blue while the radio is on.
+                    let on = matches!(value, "On" | "Ligado");
+                    let side = scale(32);
+                    let circle = RECT {
+                        left: rect.left + scale(12),
+                        top: rect.top + (height - side) / 2,
+                        right: rect.left + scale(12) + side,
+                        bottom: rect.top + (height - side) / 2 + side,
+                    };
+                    let fill = if on { palette.accent } else { palette.pressed };
+                    overlay::rounded(dc, &circle, side / 2, fill, None);
+                    let glyph_colour = if on { 0x00ff_ffff } else { palette.text };
+                    overlay::text(
+                        dc,
+                        GLYPHS[index],
+                        circle,
+                        state.glyphs,
+                        glyph_colour,
+                        DT_CENTER,
+                    );
+                    let text_left = circle.right + scale(10);
+                    let middle = rect.top + height / 2;
+                    let upper = RECT {
+                        left: text_left,
+                        top: middle - scale(18),
+                        right: rect.right - scale(8),
+                        bottom: middle,
+                    };
+                    overlay::text(dc, name, upper, state.strong, palette.text, DT_LEFT);
+                    let status = if !value.is_empty() {
+                        value
+                    } else if state.portuguese {
+                        "Configurações"
+                    } else {
+                        "Settings"
+                    };
+                    let lower = RECT {
+                        top: middle,
+                        bottom: middle + scale(18),
+                        ..upper
+                    };
+                    overlay::text(dc, status, lower, state.small, secondary, DT_LEFT);
+                } else {
+                    let glyph = RECT {
+                        left: rect.left + scale(10),
+                        right: rect.left + scale(34),
+                        ..rect
+                    };
+                    overlay::text(
+                        dc,
+                        GLYPHS[index],
+                        glyph,
+                        state.glyphs,
+                        palette.text,
+                        DT_CENTER,
+                    );
+                    let label = RECT {
+                        left: glyph.right + scale(6),
+                        right: rect.right - scale(8),
+                        ..rect
+                    };
+                    overlay::text(dc, name, label, state.font, palette.text, DT_LEFT);
+                    if !value.is_empty() {
+                        overlay::text(dc, value, label, state.small, secondary, DT_RIGHT);
+                    }
+                }
             }
         }
     }
@@ -751,12 +998,12 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                 DefWindowProcW(hwnd, msg, wp, lp)
             }
             WM_DRAWITEM if lp != 0 => {
-                overlay::paint_button(
-                    &*(lp as *const DRAWITEMSTRUCT),
-                    (*state).palette,
-                    (*state).font,
-                );
+                draw_item(&*state, &*(lp as *const DRAWITEMSTRUCT));
                 1
+            }
+            WM_PAINT => {
+                paint(hwnd, &*state);
+                0
             }
             WM_CTLCOLORSTATIC => {
                 SetBkColor(wp as HDC, (*state).palette.background);

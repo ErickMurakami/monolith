@@ -5,6 +5,10 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $application = Resolve-Path -LiteralPath $Binary
+# Run against an empty configuration so a daily-driver config.toml never adds a Dock,
+# Top Bar or other resident surface to the instance under test.
+$savedLocalAppData = $env:LOCALAPPDATA
+$env:LOCALAPPDATA = Join-Path ([IO.Path]::GetTempPath()) ('monolith-cc-' + [guid]::NewGuid().ToString('N'))
 $capturePath = $Capture
 . (Join-Path $PSScriptRoot 'desktop-smoke.ps1') -HelpersOnly
 
@@ -152,6 +156,7 @@ try {
     } 'Windows Settings did not open in the foreground.'
     'Control Center borderless styles, keyboard, native volume, mute, notifications, lifecycle and Windows Settings passed.'
 } finally {
+    $env:LOCALAPPDATA = $savedLocalAppData
     if ($launcher -and !$launcher.HasExited) {
         $panel = Find-Panel $launcher
         if ($panel -ne [IntPtr]::Zero) { [void][DesktopSmoke]::Post($panel, 0x10, [UIntPtr]::Zero, [IntPtr]::Zero) }

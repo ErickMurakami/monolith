@@ -4,6 +4,10 @@ param([string]$Binary = (Join-Path $PSScriptRoot '../target/release/monolith.exe
 # brightness briefly and always restores the original level.
 $ErrorActionPreference = 'Stop'
 $application = Resolve-Path -LiteralPath $Binary
+# Run against an empty configuration so a daily-driver config.toml never adds a Dock,
+# Top Bar or other resident surface to the instance under test.
+$savedLocalAppData = $env:LOCALAPPDATA
+$env:LOCALAPPDATA = Join-Path ([IO.Path]::GetTempPath()) ('monolith-cc-' + [guid]::NewGuid().ToString('N'))
 $capturePath = $Capture
 . (Join-Path $PSScriptRoot 'desktop-smoke.ps1') -HelpersOnly
 $dpi = [DesktopSmoke]::SetThreadDpiAwarenessContext([IntPtr](-4))
@@ -50,6 +54,7 @@ try {
     Wait-Until { (Get-Brightness) -eq $original } "Brightness did not return to $original%." 8
     'Control Center changed the internal panel brightness through WMI and restored it.'
 } finally {
+    $env:LOCALAPPDATA = $savedLocalAppData
     if ((Get-Brightness) -ne $original) {
         $methods = Get-CimInstance -Namespace root/wmi -ClassName WmiMonitorBrightnessMethods | Where-Object Active
         Invoke-CimMethod -InputObject $methods -MethodName WmiSetBrightness -Arguments @{ Timeout = 0; Brightness = [byte]$original } | Out-Null

@@ -95,7 +95,7 @@ See [project status](MONOLITH_STATUS.md) and [benchmark procedure](benchmarks/RE
 
 ![Dynamic Island showing a live local media session and transport controls](docs/island.png)
 
-![Control Center with native volume and links to Windows settings](docs/control-center.png)
+![Control Center with Wi-Fi and Bluetooth tiles, volume and brightness sliders and Windows settings shortcuts](docs/control-center.png)
 
 ![Two live window thumbnails in the Mission Control grid](docs/mission.png)
 
