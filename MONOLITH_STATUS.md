@@ -117,6 +117,6 @@ Hands-off checks (they send global keyboard or pointer input, so run them only w
 
 Then continue with:
 - Dedicated application workspaces. "Open in a new workspace" is feasible through Win+Ctrl+D and launch. Moving existing windows (Win+Shift+number, fullscreen apps) needs the private virtual desktop interfaces and founder approval.
-- Three-finger gestures. Windows already maps three-finger swipes to desktop switching in Settings; verify on the touchpad and decide whether Monolith only documents or reads that setting.
+- Three-finger gestures: the README documents the supported Windows configuration. Swipes switch native desktops, swipe-down shows the desktop, and swipe-up is a custom Win+Tab shortcut that the bridge maps to Mission Control. The touchpad settings were at their defaults (no three-finger values) on the founder's machine. Verify on the physical touchpad that the gesture-generated Win+Tab reaches the bridge, since it is injected by the system rather than by a lower-integrity process.
 - Notification actions and sensitive-content hiding.
 - Remaining Files work: mid-transfer cancellation, cross-volume moves and live WSL or UNC transfers.
