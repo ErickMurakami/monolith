@@ -113,4 +113,10 @@ The bridge now also serves the opt-in `workspace_shortcuts` setting: Win+1-9 sel
 
 ## Next task
 
-Run the pending hands-off checks (`workspace-navigation-smoke.ps1 -Shortcuts`, `desktop-smoke.ps1 -Hotkey -WinSpace -Combined`, `files-change-smoke.ps1`, `desktop-smoke.ps1 -Pins`). Verify that Dock interaction is preserved when switching native workspaces and validate the Win+Space bridge on the physical keyboard before enabling it by default. Continue with stable workspace identity, dedicated application placement and physical gesture validation. Files recycling is complete; remaining Files work covers mid-transfer cancellation, cross-volume moves and live WSL or UNC transfers.
+Hands-off checks (they send global keyboard or pointer input, so run them only when the founder is away from the desktop): `workspace-navigation-smoke.ps1 -Shortcuts`, `desktop-smoke.ps1 -Hotkey -WinSpace -Combined` (repeat after the bridge refactor), `files-change-smoke.ps1`, `desktop-smoke.ps1 -Pins`, `top-bar-appbar-smoke.ps1` (after the Top Bar buttons) and `control-center-smoke.ps1`. Supervised checks: Wi-Fi and Bluetooth toggling from Control Center, the Win+Space bridge on the physical keyboard and dead-key layouts, and three-finger gestures on the physical touchpad.
+
+Then continue with:
+- Dedicated application workspaces. "Open in a new workspace" is feasible through Win+Ctrl+D and launch. Moving existing windows (Win+Shift+number, fullscreen apps) needs the private virtual desktop interfaces and founder approval.
+- Three-finger gestures. Windows already maps three-finger swipes to desktop switching in Settings; verify on the touchpad and decide whether Monolith only documents or reads that setting.
+- Notification actions and sensitive-content hiding.
+- Remaining Files work: mid-transfer cancellation, cross-volume moves and live WSL or UNC transfers.
