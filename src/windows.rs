@@ -608,7 +608,12 @@ unsafe fn run_window(
                         continue;
                     }
                     VK_RETURN => {
-                        open_selected(hwnd, state);
+                        // Ctrl+Enter opens the application in a new native workspace.
+                        if GetKeyState(i32::from(VK_CONTROL)) < 0 {
+                            open_selected_in_new_workspace(hwnd, state);
+                        } else {
+                            open_selected(hwnd, state);
+                        }
                         continue;
                     }
                     VK_TAB => {
@@ -943,6 +948,32 @@ unsafe fn open_selected(hwnd: HWND, state: *mut State) {
             return;
         };
         launch_shortcut(hwnd, &app.path);
+    }
+}
+
+/// Open the selected application in a new native workspace. Windows have no
+/// dedicated workspace, so a window selection falls back to switching to it.
+unsafe fn open_selected_in_new_workspace(hwnd: HWND, state: *mut State) {
+    unsafe {
+        let selection = SendMessageW((*state).results, LB_GETCURSEL, 0, 0);
+        let matches = &(*state).matches;
+        let Some(&Match::App(index)) = matches.get(selection as usize) else {
+            open_selected(hwnd, state);
+            return;
+        };
+        let Some(path) = (*state)
+            .apps
+            .as_ref()
+            .and_then(|apps| apps.get(index))
+            .map(|app| app.path.clone())
+        else {
+            return;
+        };
+        // Hide first so Spotlight does not follow the user to the new desktop.
+        dismiss(hwnd, state, false);
+        if let Err(error) = crate::workspaces::open_in_new(path) {
+            report_for(hwnd, &format!("Could not open a new workspace ({error})"));
+        }
     }
 }
 

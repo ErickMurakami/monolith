@@ -159,6 +159,67 @@ pub fn switch_to(index: usize) -> bool {
         )
 }
 
+/// Create a native desktop, wait until Explorer reports it as current, then open
+/// `target` there. Runs on its own thread; if the desktop cannot be created, the
+/// target still opens on the current desktop.
+pub fn open_in_new(target: std::path::PathBuf) -> io::Result<()> {
+    std::thread::Builder::new()
+        .name("monolith-new-workspace".into())
+        .spawn(move || {
+            let before = read()
+                .ok()
+                .and_then(|workspaces| workspaces.current.map(|index| workspaces.ids[index]));
+            // The user may still hold Ctrl from Ctrl+Enter; the chord needs clean modifiers.
+            let released = wait_until(2_000, || !any_modifier_held());
+            if released && press(&[VK_LWIN, VK_LCONTROL, VK_D], 1) {
+                wait_until(1_500, || {
+                    read().ok().is_some_and(|workspaces| {
+                        workspaces.current.map(|index| workspaces.ids[index]) != before
+                    })
+                });
+            }
+            launch(&target);
+        })
+        .map(drop)
+}
+
+fn any_modifier_held() -> bool {
+    [VK_LWIN, VK_RWIN, VK_SHIFT, VK_CONTROL, VK_MENU]
+        .into_iter()
+        .any(|key| unsafe { GetAsyncKeyState(i32::from(key)) } < 0)
+}
+
+/// Poll `condition` every 25 ms for at most `limit_ms`; true when it held.
+fn wait_until(limit_ms: u64, mut condition: impl FnMut() -> bool) -> bool {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(limit_ms);
+    loop {
+        if condition() {
+            return true;
+        }
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+}
+
+fn launch(target: &std::path::Path) {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::UI::{Shell::ShellExecuteW, WindowsAndMessaging::SW_SHOWNORMAL};
+    let path: Vec<u16> = target.as_os_str().encode_wide().chain([0]).collect();
+    let verb: Vec<u16> = "open".encode_utf16().chain([0]).collect();
+    unsafe {
+        ShellExecuteW(
+            null_mut(),
+            verb.as_ptr(),
+            path.as_ptr(),
+            std::ptr::null(),
+            std::ptr::null(),
+            SW_SHOWNORMAL,
+        );
+    }
+}
+
 /// Press `keys` as a chord, repeating the final key `repeat` times, when no modifier
 /// is physically held. Input is tagged so the Monolith keyboard bridge ignores it.
 pub fn press(keys: &[u16], repeat: usize) -> bool {
