@@ -26,7 +26,7 @@ use windows_sys::Win32::{
     Foundation::{HANDLE, HWND, LPARAM, LRESULT, WPARAM},
     System::{LibraryLoader::GetModuleHandleW, Threading::GetCurrentThreadId},
     UI::{
-        Input::KeyboardAndMouse::{VK_LCONTROL, VK_LEFT, VK_LWIN, VK_RIGHT},
+        Input::KeyboardAndMouse::{VK_F24, VK_LCONTROL, VK_LEFT, VK_LMENU, VK_LWIN, VK_RIGHT},
         Input::{
             GetRawInputData, GetRawInputDeviceInfoW, HRAWINPUT, RAWINPUT, RAWINPUTDEVICE,
             RAWINPUTHEADER, RID_INPUT, RIDEV_INPUTSINK, RIDI_PREPARSEDDATA, RIM_TYPEHID,
@@ -43,6 +43,7 @@ const CONTACT_ID: u16 = 0x51;
 const CONTACT_COUNT: u16 = 0x54;
 const GENERIC_DESKTOP: u16 = 0x01;
 const X: u16 = 0x30;
+const Y: u16 = 0x31;
 /// Fraction of the touchpad width three fingers must travel to switch desktops.
 const TRAVEL: f64 = 0.12;
 
@@ -51,6 +52,9 @@ pub enum Swipe {
     /// Fingers moved left: go to the desktop on the right, as on macOS.
     Left,
     Right,
+    /// Fingers moved up: open Mission Control, as on macOS.
+    Up,
+    Down,
 }
 
 /// One finger in a completed touchpad frame.
@@ -58,43 +62,53 @@ pub enum Swipe {
 pub struct Contact {
     pub id: u32,
     pub x: f64,
+    pub y: f64,
     pub touching: bool,
 }
 
-/// Recognises a single horizontal three-finger swipe per touch.
+/// Recognises a single three-finger swipe per touch, along its dominant axis.
 #[derive(Default)]
 pub struct Recogniser {
-    start: Option<f64>,
+    start: Option<(f64, f64)>,
     fired: bool,
 }
 
 impl Recogniser {
-    /// Feed one frame; `width` is the touchpad's logical X range.
-    pub fn frame(&mut self, contacts: &[Contact], width: f64) -> Option<Swipe> {
-        let touching: Vec<f64> = contacts
+    /// Feed one frame; `size` is the touchpad's logical X and Y range.
+    pub fn frame(&mut self, contacts: &[Contact], size: (f64, f64)) -> Option<Swipe> {
+        let touching: Vec<(f64, f64)> = contacts
             .iter()
             .filter(|contact| contact.touching)
-            .map(|contact| contact.x)
+            .map(|contact| (contact.x, contact.y))
             .collect();
-        if touching.len() != 3 || width <= 0.0 {
+        if touching.len() != 3 || size.0 <= 0.0 {
             // Lifting, or any other finger count, ends the gesture.
-            if touching.is_empty() || touching.len() != 3 {
-                self.start = None;
-                self.fired = false;
-            }
+            self.start = None;
+            self.fired = false;
             return None;
         }
-        let centre = touching.iter().sum::<f64>() / 3.0;
+        let centre = (
+            touching.iter().map(|point| point.0).sum::<f64>() / 3.0,
+            touching.iter().map(|point| point.1).sum::<f64>() / 3.0,
+        );
         let start = *self.start.get_or_insert(centre);
-        if self.fired || (centre - start).abs() < width * TRAVEL {
+        if self.fired {
             return None;
         }
-        self.fired = true;
-        Some(if centre < start {
-            Swipe::Left
+        let (dx, dy) = (centre.0 - start.0, centre.1 - start.1);
+        let horizontal = dx.abs() >= size.0 * TRAVEL;
+        // Without a Y range (a horizontal-only report), vertical swipes are ignored.
+        let vertical = size.1 > 0.0 && dy.abs() >= size.1 * TRAVEL;
+        let swipe = if horizontal && (!vertical || dx.abs() / size.0 >= dy.abs() / size.1) {
+            if dx < 0.0 { Swipe::Left } else { Swipe::Right }
+        } else if vertical {
+            // Touchpad Y grows downwards.
+            if dy < 0.0 { Swipe::Up } else { Swipe::Down }
         } else {
-            Swipe::Right
-        })
+            return None;
+        };
+        self.fired = true;
+        Some(swipe)
     }
 }
 
@@ -104,6 +118,7 @@ struct Device {
     /// Link collections that carry an X coordinate: one per contact slot.
     contacts: Vec<u16>,
     width: f64,
+    height: f64,
     /// Contacts still expected for the frame in progress (hybrid reporting).
     expected: usize,
     frame: HashMap<u32, Contact>,
@@ -142,6 +157,7 @@ impl Device {
         }
         let mut contacts = Vec::new();
         let mut width = 0.0;
+        let mut height = 0.0;
         for value in &values[..count as usize] {
             let usage = if value.IsRange {
                 unsafe { value.Anonymous.Range.UsageMin }
@@ -152,11 +168,15 @@ impl Device {
                 contacts.push(value.LinkCollection);
                 width = f64::from(value.LogicalMax - value.LogicalMin);
             }
+            if value.UsagePage == GENERIC_DESKTOP && usage == Y {
+                height = f64::from(value.LogicalMax - value.LogicalMin);
+            }
         }
         (!contacts.is_empty()).then_some(Self {
             preparsed,
             contacts,
             width,
+            height,
             expected: 0,
             frame: HashMap::new(),
         })
@@ -220,6 +240,7 @@ impl Device {
                     Contact {
                         id,
                         x: f64::from(x),
+                        y: f64::from(self.value(report, GENERIC_DESKTOP, link, Y).unwrap_or(0)),
                         touching,
                     },
                 );
@@ -373,17 +394,25 @@ unsafe fn handle_input(input: HRAWINPUT) {
                     std::slice::from_raw_parts(start.add(index * report_size), report_size)
                         .to_vec();
                 if let Some(contacts) = device.report(&mut report) {
-                    swipe = swipe.or(recogniser.frame(&contacts, device.width));
+                    swipe = swipe.or(recogniser.frame(&contacts, (device.width, device.height)));
                 }
             }
             swipe
         });
         if let Some(swipe) = swipe {
-            let key = match swipe {
-                Swipe::Left => VK_RIGHT,
-                Swipe::Right => VK_LEFT,
-            };
-            crate::workspaces::press(&[VK_LWIN, VK_LCONTROL, key], 1);
+            match swipe {
+                Swipe::Left => {
+                    crate::workspaces::press(&[VK_LWIN, VK_LCONTROL, VK_RIGHT], 1);
+                }
+                Swipe::Right => {
+                    crate::workspaces::press(&[VK_LWIN, VK_LCONTROL, VK_LEFT], 1);
+                }
+                // The registered Mission Control chord gives the overview foreground rights.
+                Swipe::Up => {
+                    crate::workspaces::press(&[VK_LCONTROL, VK_LMENU, VK_F24], 1);
+                }
+                Swipe::Down => {}
+            }
         }
     }
 }
@@ -398,6 +427,7 @@ mod tests {
             .map(|(id, &x)| Contact {
                 id: id as u32,
                 x,
+                y: 500.0,
                 touching: true,
             })
             .collect()
@@ -408,43 +438,83 @@ mod tests {
         let mut recogniser = Recogniser::default();
         let width = 1000.0;
         assert_eq!(
-            recogniser.frame(&fingers(&[500.0, 550.0, 600.0]), width),
+            recogniser.frame(&fingers(&[500.0, 550.0, 600.0]), (width, width)),
             None
         );
         assert_eq!(
-            recogniser.frame(&fingers(&[480.0, 530.0, 580.0]), width),
+            recogniser.frame(&fingers(&[480.0, 530.0, 580.0]), (width, width)),
             None
         );
         // 120 units of travel (12% of the width) to the left switches once.
         assert_eq!(
-            recogniser.frame(&fingers(&[380.0, 430.0, 480.0]), width),
+            recogniser.frame(&fingers(&[380.0, 430.0, 480.0]), (width, width)),
             Some(Swipe::Left)
         );
         assert_eq!(
-            recogniser.frame(&fingers(&[200.0, 250.0, 300.0]), width),
+            recogniser.frame(&fingers(&[200.0, 250.0, 300.0]), (width, width)),
             None
         );
         // Lifting resets; the next swipe can go the other way.
-        assert_eq!(recogniser.frame(&[], width), None);
+        assert_eq!(recogniser.frame(&[], (width, width)), None);
         assert_eq!(
-            recogniser.frame(&fingers(&[300.0, 350.0, 400.0]), width),
+            recogniser.frame(&fingers(&[300.0, 350.0, 400.0]), (width, width)),
             None
         );
         assert_eq!(
-            recogniser.frame(&fingers(&[430.0, 480.0, 530.0]), width),
+            recogniser.frame(&fingers(&[430.0, 480.0, 530.0]), (width, width)),
             Some(Swipe::Right)
         );
     }
 
     #[test]
+    fn recognises_upward_swipes_and_the_dominant_axis() {
+        let at = |x: f64, y: f64| {
+            vec![
+                Contact {
+                    id: 0,
+                    x,
+                    y,
+                    touching: true,
+                },
+                Contact {
+                    id: 1,
+                    x: x + 50.0,
+                    y,
+                    touching: true,
+                },
+                Contact {
+                    id: 2,
+                    x: x + 100.0,
+                    y,
+                    touching: true,
+                },
+            ]
+        };
+        let size = (1000.0, 600.0);
+        let mut recogniser = Recogniser::default();
+        assert_eq!(recogniser.frame(&at(400.0, 400.0), size), None);
+        // 80 units up (13% of the height) beats 30 units sideways (3% of the width).
+        assert_eq!(recogniser.frame(&at(430.0, 320.0), size), Some(Swipe::Up));
+        assert_eq!(recogniser.frame(&[], size), None);
+        assert_eq!(recogniser.frame(&at(400.0, 300.0), size), None);
+        assert_eq!(recogniser.frame(&at(400.0, 390.0), size), Some(Swipe::Down));
+    }
+
+    #[test]
     fn ignores_two_and_four_finger_movement() {
         let mut recogniser = Recogniser::default();
-        assert_eq!(recogniser.frame(&fingers(&[500.0, 600.0]), 1000.0), None);
-        assert_eq!(recogniser.frame(&fingers(&[100.0, 200.0]), 1000.0), None);
+        assert_eq!(
+            recogniser.frame(&fingers(&[500.0, 600.0]), (1000.0, 1000.0)),
+            None
+        );
+        assert_eq!(
+            recogniser.frame(&fingers(&[100.0, 200.0]), (1000.0, 1000.0)),
+            None
+        );
         let four = fingers(&[500.0, 550.0, 600.0, 650.0]);
-        assert_eq!(recogniser.frame(&four, 1000.0), None);
+        assert_eq!(recogniser.frame(&four, (1000.0, 1000.0)), None);
         let moved = fingers(&[100.0, 150.0, 200.0, 250.0]);
-        assert_eq!(recogniser.frame(&moved, 1000.0), None);
+        assert_eq!(recogniser.frame(&moved, (1000.0, 1000.0)), None);
     }
 
     #[test]
@@ -481,9 +551,10 @@ mod tests {
             if hid.usUsagePage == DIGITIZER && hid.usUsage == TOUCH_PAD {
                 let decoded = Device::open(device.hDevice).expect("touchpad descriptor");
                 println!(
-                    "touchpad: {} contact slots, X range {}",
+                    "touchpad: {} contact slots, X range {}, Y range {}",
                     decoded.contacts.len(),
-                    decoded.width
+                    decoded.width,
+                    decoded.height
                 );
                 found += 1;
             }
