@@ -683,7 +683,19 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
                 }) {
                     // A direct control; the Settings page remains the fallback below.
                     if let Some(radios) = &(*state).radios {
+                        // Show the requested state at once; the StateChanged event
+                        // confirms it, or restores the real state if Windows refuses.
+                        let requested = radios.states().get(kind).map(|on| !on);
                         radios.toggle(kind);
+                        let index = id - FIRST_SETTING;
+                        let (english, translated, _) = SETTINGS[index];
+                        let name = label((*state).portuguese, english, translated);
+                        let caption = format!(
+                            "{}  \u{2026}",
+                            radio_caption(name, requested, (*state).portuguese)
+                        );
+                        SetWindowTextW(lp as HWND, wide(&caption).as_ptr());
+                        InvalidateRect(lp as HWND, std::ptr::null(), 1);
                     }
                 } else if let Some((_, _, uri)) = id
                     .checked_sub(FIRST_SETTING)
